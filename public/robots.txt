@@ -1,0 +1,11 @@
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /admin
+Disallow: /my
+Disallow: /uploads/
+Disallow: /thumbs/
+Disallow: /camera/
+Disallow: /oauth2/
+
+Sitemap: https://3d.luftaquila.io/sitemap.xml
