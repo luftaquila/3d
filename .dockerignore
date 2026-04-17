@@ -1,0 +1,13 @@
+node_modules
+npm-debug.log
+.env
+.env.*
+data/
+*.sqlite
+*.sqlite-journal
+.git
+.github
+.vscode
+.idea
+wasm-src/target
+wasm-src/pkg

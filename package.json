@@ -1,0 +1,27 @@
+{
+  "name": "lufthafen-3d",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "description": "3D printing quote management service for 3d.luftaquila.io",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^11.0.2",
+    "@fastify/multipart": "^10.0.0",
+    "@fastify/oauth2": "^8.2.0",
+    "@fastify/rate-limit": "^10.3.0",
+    "@fastify/secure-session": "^8.3.0",
+    "@fastify/static": "^9.1.1",
+    "better-sqlite3": "^12.9.0",
+    "fastify": "^5.8.5",
+    "undici": "^8.1.0",
+    "ulid": "^3.0.2"
+  }
+}
