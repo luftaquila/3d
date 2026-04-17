@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="ko" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="same-origin">
+  <title>3D 프린팅 출력대행 · 하라는코딩은안하고</title>
+  <meta name="description" content="대전 유성구 3D 프린팅 출력대행">
+  <meta name="keywords" content="3D 프린팅, 3D 프린터, 출력대행, STL, 대전, 유성구, 하라는코딩은안하고">
+  <meta name="author" content="하라는코딩은안하고">
+  <meta name="theme-color" content="#1c1c1e">
+  <meta name="naver-site-verification" content="f0349ba520ea94eee53108ba01ea6255a9df2192" />
+  <link rel="canonical" href="https://3d.luftaquila.io/">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="하라는코딩은안하고">
+  <meta property="og:title" content="3D 프린팅 출력대행">
+  <meta property="og:description" content="대전 유성구 3D 프린팅 출력대행">
+  <meta property="og:url" content="https://3d.luftaquila.io/">
+  <meta property="og:image" content="https://3d.luftaquila.io/og-image.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="3D 프린팅 출력대행">
+  <meta property="og:locale" content="ko_KR">
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="3D 프린팅 출력대행">
+  <meta name="twitter:description" content="대전 유성구 3D 프린팅 출력대행">
+  <meta name="twitter:image" content="https://3d.luftaquila.io/og-image.png">
+
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/app.css">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "LocalBusiness",
+    "name": "하라는코딩은안하고",
+    "description": "3D 프린팅 출력대행",
+    "url": "https://3d.luftaquila.io/",
+    "image": "https://3d.luftaquila.io/og-image.png",
+    "address": {
+      "@type": "PostalAddress",
+      "streetAddress": "계룡로46번길 61",
+      "addressLocality": "유성구",
+      "addressRegion": "대전광역시",
+      "addressCountry": "KR"
+    },
+    "geo": {
+      "@type": "GeoCoordinates",
+      "latitude": 36.352516946341794,
+      "longitude": 127.33510111321394
+    },
+    "areaServed": "KR"
+  }
+  </script>
+  <script>
+    (function () {
+      try {
+        const saved = localStorage.getItem('theme');
+        if (saved === 'light' || saved === 'dark') {
+          document.documentElement.setAttribute('data-theme', saved);
+        }
+      } catch {}
+    })();
+  </script>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/",
+      "hls.js": "https://cdn.jsdelivr.net/npm/hls.js@1.6.16/dist/hls.mjs"
+    }
+  }
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="/">하라는코딩은안하고</a>
+    <nav>
+      <button type="button" class="nav-icon" id="theme-toggle" title="테마 전환" aria-label="테마 전환"></button>
+      <a href="/my" data-nav="my" class="nav-icon auth-only hidden" title="내 견적" aria-label="내 견적">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+          <circle cx="12" cy="7" r="4"/>
+        </svg>
+      </a>
+      <a href="/admin" data-nav="admin" class="nav-icon admin-link hidden" title="관리" aria-label="관리">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/>
+        </svg>
+      </a>
+      <span class="session-area"></span>
+    </nav>
+  </header>
+  <main id="app"></main>
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>
