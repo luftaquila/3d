@@ -47,6 +47,8 @@ export async function registerAuth(app) {
     checkStateFunction: (req, cb) => {
       const expected = req.session.get('oauth_state');
       const got = req.query?.state;
+      // Single-use: clear immediately so a failed callback cannot reuse the same state.
+      req.session.set('oauth_state', undefined);
       if (!expected || expected !== got) return cb(new Error('invalid oauth state'));
       cb();
     },
@@ -104,7 +106,7 @@ export async function registerAuth(app) {
     }
   });
 
-  app.post('/oauth2/logout', async (req, reply) => {
+  app.post('/oauth2/logout', { preHandler: requireCsrfHeader }, async (req, reply) => {
     req.session.delete();
     return reply.redirect('/');
   });

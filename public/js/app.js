@@ -69,11 +69,24 @@ function updateHeader() {
   if (!sessionArea) return;
   sessionArea.innerHTML = '';
   if (state.session?.authenticated) {
-    const form = document.createElement('form');
-    form.method = 'POST';
-    form.action = '/oauth2/logout';
-    form.innerHTML = `<button type="submit" class="nav-icon" title="로그아웃" aria-label="로그아웃">${LOGOUT_ICON_SVG}</button>`;
-    sessionArea.appendChild(form);
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'nav-icon';
+    btn.title = '로그아웃';
+    btn.setAttribute('aria-label', '로그아웃');
+    btn.innerHTML = LOGOUT_ICON_SVG;
+    btn.addEventListener('click', async () => {
+      try {
+        await fetch('/oauth2/logout', {
+          method: 'POST',
+          headers: { 'X-Requested-With': 'fetch' },
+          credentials: 'same-origin',
+          redirect: 'manual',
+        });
+      } catch { /* ignore network errors, still redirect */ }
+      location.href = '/';
+    });
+    sessionArea.appendChild(btn);
   } else {
     const btn = document.createElement('a');
     btn.href = `/oauth2/login?return_to=${encodeURIComponent(location.pathname + location.hash)}`;
