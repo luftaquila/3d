@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { loadStlWasm } from './stl-wasm.js';
 
-export async function generateThumbnail(arrayBuffer, size = 200) {
+export async function generateThumbnail(arrayBuffer, size = 512) {
   const mod = await loadStlWasm();
   const mesh = mod.parse_stl(new Uint8Array(arrayBuffer));
 
