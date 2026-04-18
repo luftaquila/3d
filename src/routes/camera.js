@@ -161,10 +161,11 @@ class MjpegBroadcaster {
     // HA (and some other sources) include the leading "--" in the
     // boundary parameter, so the in-stream separator is just "--" + name,
     // not "----" + name. Detect and compensate.
-    const marker = boundary.startsWith('--') ? `\r\n${boundary}` : `\r\n--${boundary}`;
-    const boundaryMarker = Buffer.from(marker);
+    const bareBoundary = boundary.startsWith('--') ? boundary : `--${boundary}`;
+    const boundaryMarker = Buffer.from(`\r\n${bareBoundary}`);
+    const boundaryAtStart = Buffer.from(bareBoundary);
 
-    this.upstream = { ac, contentType: ct, boundaryMarker };
+    this.upstream = { ac, contentType: ct, boundaryMarker, boundaryAtStart };
     this._pump(res).catch((err) => {
       this.log.warn({ err: err?.message }, 'mjpeg pump threw');
     });
@@ -175,14 +176,24 @@ class MjpegBroadcaster {
     try {
       for await (const chunk of res.body) {
         if (this.clients.size === 0) continue;
-        const { boundaryMarker } = this.upstream;
+        const { boundaryMarker, boundaryAtStart } = this.upstream;
         for (const c of [...this.clients]) {
           if (c.res.destroyed || c.res.writableEnded) {
             this.clients.delete(c);
             continue;
           }
           if (!c.aligned) {
-            const idx = chunk.indexOf(boundaryMarker);
+            // A boundary delimiter in multipart is typically preceded by
+            // CRLF (end of previous part), but upstream implementations
+            // sometimes flush chunks that begin exactly at "--boundary"
+            // with no leading CRLF — notably when HA aligns its output
+            // buffer to frame boundaries. Match either case.
+            let idx = chunk.indexOf(boundaryMarker);
+            if (idx === -1
+                && chunk.length >= boundaryAtStart.length
+                && chunk.subarray(0, boundaryAtStart.length).equals(boundaryAtStart)) {
+              idx = 0;
+            }
             if (idx === -1) continue;
             c.aligned = true;
             c.res.write(chunk.subarray(idx));
