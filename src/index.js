@@ -20,6 +20,22 @@ async function build() {
     logger: {
       level: config.isProd ? 'info' : 'debug',
       redact: ['req.headers.cookie', 'req.headers.authorization', 'headers.cookie'],
+      serializers: {
+        req(req) {
+          let url = req.url;
+          if (typeof url === 'string' && url.startsWith('/camera/')) {
+            const q = url.indexOf('?');
+            if (q !== -1) url = `${url.slice(0, q)}?[redacted]`;
+          }
+          return {
+            method: req.method,
+            url,
+            host: req.host || req.headers?.host,
+            remoteAddress: req.ip,
+            remotePort: req.socket?.remotePort,
+          };
+        },
+      },
     },
     trustProxy: true,
     bodyLimit: 2 * 1024 * 1024,

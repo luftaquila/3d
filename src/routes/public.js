@@ -1,6 +1,7 @@
 import { openDatabase } from '../db.js';
 import { currentSession } from '../auth.js';
 import { config } from '../config.js';
+import { issueStreamUrl } from './camera.js';
 
 export default async function publicRoutes(app) {
   app.get('/api/me', async (req) => {
@@ -33,11 +34,12 @@ export default async function publicRoutes(app) {
     return { fields: rows };
   });
 
-  app.get('/api/camera/status', async () => {
+  app.get('/api/camera/status', async (req, reply) => {
     const db = openDatabase();
     const row = db.prepare('SELECT value FROM settings WHERE key = ?').get('camera_enabled');
     const enabled = row?.value === '1';
+    reply.header('cache-control', 'no-store');
     if (!enabled) return { enabled: false };
-    return { enabled: true, streamUrl: '/camera/stream' };
+    return { enabled: true, streamUrl: issueStreamUrl(req.ip) };
   });
 }

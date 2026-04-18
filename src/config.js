@@ -1,3 +1,5 @@
+import crypto from 'node:crypto';
+
 const required = (name) => {
   const v = process.env[name];
   if (!v) throw new Error(`missing required env var: ${name}`);
@@ -6,11 +8,14 @@ const required = (name) => {
 
 const optional = (name, fallback) => process.env[name] ?? fallback;
 
+const sessionSecret = required('SESSION_SECRET');
+
 export const config = {
   port: Number(optional('PORT', '3000')),
   dataDir: optional('DATA_DIR', '/data'),
   publicOrigin: required('PUBLIC_ORIGIN'),
-  sessionSecret: required('SESSION_SECRET'),
+  sessionSecret,
+  cameraStreamKey: crypto.createHash('sha256').update(`${sessionSecret}:camera-stream`).digest(),
   adminEmail: required('ADMIN_EMAIL').toLowerCase(),
   google: {
     clientId: required('GOOGLE_CLIENT_ID'),
