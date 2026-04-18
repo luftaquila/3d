@@ -33,9 +33,11 @@ async function readThumbBuffer(stream) {
   let size = 0;
   for await (const chunk of stream) {
     size += chunk.length;
-    if (size <= MAX_THUMB_BYTES) chunks.push(chunk);
+    if (size > MAX_THUMB_BYTES) {
+      return { overflow: true, size };
+    }
+    chunks.push(chunk);
   }
-  if (size > MAX_THUMB_BYTES) return { overflow: true, size };
   return { buf: Buffer.concat(chunks), size };
 }
 
@@ -222,17 +224,6 @@ export default async function quoteRoutes(app) {
       return reply.code(400).send({ error: 'STL 파일을 최소 1개 업로드해주세요.' });
     }
 
-    const activeBytes = db.prepare(`
-      SELECT COALESCE(SUM(size_bytes), 0) AS used
-      FROM quote_files
-      WHERE deleted_at IS NULL
-        AND quote_id IN (SELECT id FROM quotes WHERE user_id = ?)
-    `).get(req.auth.userId).used;
-    if (activeBytes + totalBytes > config.limits.userQuotaBytes) {
-      await cleanupUploads(acceptedFiles);
-      return reply.code(413).send({ error: '사용자 업로드 용량 한도를 초과했습니다.' });
-    }
-
     const validFieldIds = new Set(db.prepare('SELECT id FROM form_fields').all().map((r) => r.id));
     const filteredAnswers = {};
     for (const [k, v] of Object.entries(answers)) {
@@ -240,6 +231,12 @@ export default async function quoteRoutes(app) {
     }
 
     const now = Date.now();
+    const quotaQuery = db.prepare(`
+      SELECT COALESCE(SUM(size_bytes), 0) AS used
+      FROM quote_files
+      WHERE deleted_at IS NULL
+        AND quote_id IN (SELECT id FROM quotes WHERE user_id = ?)
+    `);
     const insertQuote = db.prepare(`
       INSERT INTO quotes (id, user_id, phone, name, status, answers_json, created_at)
       VALUES (?, ?, ?, ?, 'received', ?, ?)
@@ -250,7 +247,13 @@ export default async function quoteRoutes(app) {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
+    let quotaExceeded = false;
     const tx = db.transaction(() => {
+      const used = quotaQuery.get(req.auth.userId).used;
+      if (used + totalBytes > config.limits.userQuotaBytes) {
+        quotaExceeded = true;
+        return;
+      }
       insertQuote.run(quoteId, req.auth.userId, phone, name, JSON.stringify(filteredAnswers), now);
       for (const f of acceptedFiles) {
         insertFile.run(
@@ -262,7 +265,17 @@ export default async function quoteRoutes(app) {
         );
       }
     });
-    tx();
+    try {
+      tx.immediate();
+    } catch (err) {
+      await cleanupUploads(acceptedFiles);
+      throw err;
+    }
+
+    if (quotaExceeded) {
+      await cleanupUploads(acceptedFiles);
+      return reply.code(413).send({ error: '사용자 업로드 용량 한도를 초과했습니다.' });
+    }
 
     sendQuoteNotification(req.log, {
       quoteId,
