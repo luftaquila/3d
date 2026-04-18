@@ -3,23 +3,49 @@ import * as Draft from '../draft.js';
 import { generateThumbnail } from '../thumb-gen.js';
 import { renderWarningBadge, wireWarningBadges } from '../watertight-badge.js';
 
-// Disconnect the camera MJPEG stream while the tab is hidden so the server's
-// fan-out broadcaster can release the HA upstream (and the printer). Reconnect
-// with a fresh token on return — the old token may have expired.
-document.addEventListener('visibilitychange', async () => {
+// Camera stream self-healing.
+//   - visibilitychange: drop the stream when the tab is hidden so the server's
+//     fan-out broadcaster can release the HA upstream. Reissue a fresh token
+//     on return (the old one may have expired).
+//   - <img> 'error' on the stream element: expired token, IP change (mobile
+//     roam), or server-side forced disconnect. Fetch a new token and retry.
+// A module-level cooldown prevents tight reconnect loops when the upstream is
+// persistently broken (HA down etc.).
+const CAMERA_REFRESH_MIN_INTERVAL_MS = 5000;
+let lastCameraRefresh = 0;
+
+async function refreshCameraStream(img) {
+  const now = Date.now();
+  if (now - lastCameraRefresh < CAMERA_REFRESH_MIN_INTERVAL_MS) return;
+  lastCameraRefresh = now;
+  try {
+    const fresh = await api('/api/camera/status');
+    if (document.hidden || !img.isConnected) return;
+    if (!fresh.enabled) {
+      img.removeAttribute('src');
+      document.getElementById('camera-panel')?.classList.add('hidden');
+      return;
+    }
+    if (fresh.streamUrl) img.src = fresh.streamUrl;
+  } catch { /* server unreachable; next error will retry after cooldown */ }
+}
+
+function wireCameraStream(img) {
+  if (!img) return;
+  img.addEventListener('error', () => {
+    if (document.hidden || !img.isConnected) return;
+    refreshCameraStream(img);
+  });
+}
+
+document.addEventListener('visibilitychange', () => {
   const img = document.getElementById('camera-stream');
   if (!img) return;
   if (document.hidden) {
     img.removeAttribute('src');
     return;
   }
-  try {
-    const fresh = await api('/api/camera/status');
-    // Re-check after await: rapid hide-show-hide could have flipped state,
-    // and SPA navigation could have detached the img from the DOM.
-    if (document.hidden || !img.isConnected) return;
-    if (fresh.enabled && fresh.streamUrl) img.src = fresh.streamUrl;
-  } catch { /* keep old src; browser will retry */ }
+  refreshCameraStream(img);
 });
 
 const GOOGLE_ICON_SVG = `
@@ -104,6 +130,7 @@ export async function renderHome(host, state, navigate) {
   `;
 
   renderDynamicFields(fields);
+  wireCameraStream(document.getElementById('camera-stream'));
   const control = wireQuoteForm(fields, state, navigate);
 
   mountNaverMap(place, mapsClientId).catch((err) => console.warn('naver map mount failed', err));

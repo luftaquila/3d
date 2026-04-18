@@ -4,7 +4,7 @@ import { openDatabase } from '../db.js';
 import { config } from '../config.js';
 
 const TOKEN_TTL_SECONDS = 60 * 60;
-const MAX_STREAMS_PER_IP = 2;
+const MAX_STREAMS_PER_IP = 5;
 const UPSTREAM_IDLE_GRACE_MS = 5000;
 const CLIENT_WRITE_HIGH_WATER = 512 * 1024;
 const CLIENT_MAX_CONSECUTIVE_DROPS = 240;
@@ -189,7 +189,10 @@ class MjpegBroadcaster {
             c.dropped += 1;
             c.consecutiveDrops += 1;
             if (c.consecutiveDrops >= CLIENT_MAX_CONSECUTIVE_DROPS) {
-              try { c.res.end(); } catch { /* ignore */ }
+              // destroy (not end) so browser's <img> receives a network error
+              // event and can trigger a reconnect, instead of a graceful EOF
+              // that renders as "frozen frame".
+              try { c.res.destroy(); } catch { /* ignore */ }
               this.clients.delete(c);
             }
             continue;
@@ -205,7 +208,8 @@ class MjpegBroadcaster {
         this.log.warn({ err: err?.message }, 'mjpeg upstream errored');
       }
     } finally {
-      for (const c of this.clients) { try { c.res.end(); } catch { /* ignore */ } }
+      // destroy so viewers' <img> fires 'error' and can reconnect via onerror.
+      for (const c of this.clients) { try { c.res.destroy(); } catch { /* ignore */ } }
       this.clients.clear();
       this.upstream = null;
       if (this.idleTimer) { clearTimeout(this.idleTimer); this.idleTimer = null; }
