@@ -104,6 +104,8 @@ class MjpegBroadcaster {
         'Content-Type': this.upstream.contentType,
         'Cache-Control': 'no-store',
         'Connection': 'close',
+        'X-Content-Type-Options': 'nosniff',
+        'X-Frame-Options': 'SAMEORIGIN',
       });
     } catch (err) {
       if (this.clients.size === 0) this._scheduleStop();
@@ -165,6 +167,7 @@ class MjpegBroadcaster {
   }
 
   async _pump(res) {
+    const upstream = this.upstream;
     try {
       for await (const chunk of res.body) {
         if (this.clients.size === 0) continue;
@@ -196,7 +199,11 @@ class MjpegBroadcaster {
         }
       }
     } catch (err) {
-      this.log.warn({ err: err?.message }, 'mjpeg upstream errored');
+      if (upstream?.intentionalAbort) {
+        this.log.info('mjpeg upstream closed on idle grace');
+      } else {
+        this.log.warn({ err: err?.message }, 'mjpeg upstream errored');
+      }
     } finally {
       for (const c of this.clients) { try { c.res.end(); } catch { /* ignore */ } }
       this.clients.clear();
@@ -210,6 +217,7 @@ class MjpegBroadcaster {
     this.idleTimer = setTimeout(() => {
       this.idleTimer = null;
       if (this.clients.size === 0 && this.upstream) {
+        this.upstream.intentionalAbort = true;
         try { this.upstream.ac.abort(); } catch { /* ignore */ }
       }
     }, UPSTREAM_IDLE_GRACE_MS);

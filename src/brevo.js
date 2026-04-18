@@ -2,6 +2,23 @@ import { config } from './config.js';
 
 const lastSendByUser = new Map();
 const DEBOUNCE_MS = 60 * 1000;
+const MAX_TRACKED_USERS = 1000;
+
+function markSent(userEmail, now) {
+  // Opportunistic TTL sweep: entries older than DEBOUNCE_MS serve no purpose.
+  for (const [k, t] of [...lastSendByUser]) {
+    if (now - t >= DEBOUNCE_MS) lastSendByUser.delete(k);
+  }
+  // Move/insert this entry to the tail so head is least-recently-sent for LRU.
+  lastSendByUser.delete(userEmail);
+  lastSendByUser.set(userEmail, now);
+  // Hard cap: evict from head (oldest) if over limit.
+  while (lastSendByUser.size > MAX_TRACKED_USERS) {
+    const oldest = lastSendByUser.keys().next().value;
+    if (oldest === undefined) break;
+    lastSendByUser.delete(oldest);
+  }
+}
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({
@@ -21,7 +38,7 @@ export async function sendQuoteNotification(log, { quoteId, userEmail, phone, na
     log.info({ quoteId, userEmail }, 'brevo debounced');
     return;
   }
-  lastSendByUser.set(userEmail, now);
+  markSent(userEmail, now);
 
   const adminUrl = `${config.publicOrigin}/admin`;
   const body = {

@@ -3,6 +3,25 @@ import * as Draft from '../draft.js';
 import { generateThumbnail } from '../thumb-gen.js';
 import { renderWarningBadge, wireWarningBadges } from '../watertight-badge.js';
 
+// Disconnect the camera MJPEG stream while the tab is hidden so the server's
+// fan-out broadcaster can release the HA upstream (and the printer). Reconnect
+// with a fresh token on return — the old token may have expired.
+document.addEventListener('visibilitychange', async () => {
+  const img = document.getElementById('camera-stream');
+  if (!img) return;
+  if (document.hidden) {
+    img.removeAttribute('src');
+    return;
+  }
+  try {
+    const fresh = await api('/api/camera/status');
+    // Re-check after await: rapid hide-show-hide could have flipped state,
+    // and SPA navigation could have detached the img from the DOM.
+    if (document.hidden || !img.isConnected) return;
+    if (fresh.enabled && fresh.streamUrl) img.src = fresh.streamUrl;
+  } catch { /* keep old src; browser will retry */ }
+});
+
 const GOOGLE_ICON_SVG = `
   <svg viewBox="0 0 24 24" aria-hidden="true" style="width:16px;height:16px;">
     <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z"/>

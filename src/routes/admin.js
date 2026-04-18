@@ -230,8 +230,11 @@ export default async function adminRoutes(app) {
     if (row.file_path && insideDataDir(row.file_path)) {
       try { await fs.unlink(row.file_path); } catch { /* ignore */ }
     }
+    if (row.thumb_path && insideDataDir(row.thumb_path)) {
+      try { await fs.unlink(row.thumb_path); } catch { /* ignore */ }
+    }
     db.prepare(`
-      UPDATE quote_files SET file_path = NULL, deleted_at = ? WHERE id = ?
+      UPDATE quote_files SET file_path = NULL, thumb_path = NULL, deleted_at = ? WHERE id = ?
     `).run(Date.now(), fileId);
     return { ok: true };
   });
