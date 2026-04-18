@@ -21,6 +21,20 @@ function backfillValidatePng(buf) {
   return width > 0 && height > 0 && width <= BACKFILL_THUMB_DIM && height <= BACKFILL_THUMB_DIM;
 }
 
+async function readPngWidth(filePath) {
+  let fh;
+  try {
+    fh = await fs.open(filePath, 'r');
+    const buf = Buffer.alloc(24);
+    const { bytesRead } = await fh.read(buf, 0, 24, 0);
+    if (bytesRead < 24) return null;
+    if (!PNG_MAGIC.equals(buf.subarray(0, 8))) return null;
+    if (buf.subarray(12, 16).toString('ascii') !== 'IHDR') return null;
+    return buf.readUInt32BE(16);
+  } catch { return null; }
+  finally { if (fh) await fh.close().catch(() => {}); }
+}
+
 export default async function adminRoutes(app) {
   app.get('/api/admin/quotes', { preHandler: requireAdmin }, async () => {
     const db = openDatabase();
@@ -113,19 +127,29 @@ export default async function adminRoutes(app) {
       WHERE qf.deleted_at IS NULL
         AND qf.file_path IS NOT NULL
         AND q.deleted_at IS NULL
-        AND (qf.thumb_path IS NULL OR qf.is_watertight IS NULL)
       ORDER BY qf.created_at ASC
     `).all();
-    return {
-      files: rows.map((r) => ({
+
+    const files = [];
+    for (const r of rows) {
+      let thumbStale = false;
+      if (r.thumbPath) {
+        const w = await readPngWidth(r.thumbPath);
+        thumbStale = w !== null && w < BACKFILL_THUMB_DIM;
+      }
+      const missingThumb = !r.thumbPath || thumbStale;
+      const missingWatertight = r.isWatertight === null || r.isWatertight === undefined;
+      if (!missingThumb && !missingWatertight) continue;
+      files.push({
         quoteId: r.quoteId,
         fileId: r.id,
         filename: r.filename,
         stlUrl: `/uploads/${r.quoteId}/${r.id}.stl`,
-        missingThumb: !r.thumbPath,
-        missingWatertight: r.isWatertight === null || r.isWatertight === undefined,
-      })),
-    };
+        missingThumb,
+        missingWatertight,
+      });
+    }
+    return { files };
   });
 
   app.post('/api/admin/backfill/update/:quoteId/:fileId', {

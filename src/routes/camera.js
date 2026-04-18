@@ -158,7 +158,11 @@ class MjpegBroadcaster {
       ac.abort();
       throw new Error('upstream empty multipart boundary');
     }
-    const boundaryMarker = Buffer.from(`\r\n--${boundary}`);
+    // HA (and some other sources) include the leading "--" in the
+    // boundary parameter, so the in-stream separator is just "--" + name,
+    // not "----" + name. Detect and compensate.
+    const marker = boundary.startsWith('--') ? `\r\n${boundary}` : `\r\n--${boundary}`;
+    const boundaryMarker = Buffer.from(marker);
 
     this.upstream = { ac, contentType: ct, boundaryMarker };
     this._pump(res).catch((err) => {
