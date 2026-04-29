@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import { config } from './config.js';
 import { openDatabase } from './db.js';
 
-const SAFE_PATH = /^\/(quote|my|admin)(\/|$)|^\/$/;
+const SAFE_PATH = /^\/(quote|live|my|admin)(\/|$)|^\/$/;
 
 function deriveSessionKey(secret) {
   return crypto.createHash('sha256').update(secret).digest();

@@ -73,10 +73,10 @@ async function build() {
         'content-security-policy',
         [
           "default-src 'self'",
-          "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://cdn.jsdelivr.net https://*.naver.com https://*.pstatic.net",
+          "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://cdn.jsdelivr.net https://*.naver.com https://*.pstatic.net https://www.googletagmanager.com",
           "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-          "img-src 'self' data: blob: https://*.pstatic.net https://*.map.naver.net https://*.naver.com",
-          "connect-src 'self' https://cdn.jsdelivr.net https://*.naver.com https://*.pstatic.net https://*.navercorp.com",
+          "img-src 'self' data: blob: https://*.pstatic.net https://*.map.naver.net https://*.naver.com https://*.google-analytics.com https://*.googletagmanager.com",
+          "connect-src 'self' https://cdn.jsdelivr.net https://*.naver.com https://*.pstatic.net https://*.navercorp.com https://*.google-analytics.com https://*.analytics.google.com https://*.googletagmanager.com",
           "font-src 'self' https://fonts.gstatic.com",
           "media-src 'self' blob:",
           "worker-src 'self' blob:",

@@ -145,7 +145,7 @@ async function route() {
   updateHeader();
   const path = location.pathname;
   try {
-    if (path === '/' || path === '' || path.startsWith('/quote')) {
+    if (path === '/' || path === '' || path.startsWith('/quote') || path.startsWith('/live')) {
       await renderHome(host, state, navigate);
     } else if (path.startsWith('/my')) {
       await renderMy(host, state, navigate);
@@ -170,8 +170,11 @@ window.addEventListener('beforeunload', () => {
   await loadSession();
   await route();
   const saved = sessionStorage.getItem('scroll-y');
-  if (saved) {
-    sessionStorage.removeItem('scroll-y');
+  sessionStorage.removeItem('scroll-y');
+  // /quote and /live anchor to a specific section; restoring the previous
+  // scroll position would override that.
+  const isAnchor = location.pathname.startsWith('/quote') || location.pathname.startsWith('/live');
+  if (saved && !isAnchor) {
     requestAnimationFrame(() => window.scrollTo({ top: Number(saved), behavior: 'smooth' }));
   }
 })();

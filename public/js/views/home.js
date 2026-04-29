@@ -57,6 +57,20 @@ const GOOGLE_ICON_SVG = `
   </svg>
 `;
 
+function scrollToPanel(id) {
+  // Defer past the current paint so async render work (restoreDraft, dynamic
+  // fields, file cards) has settled, otherwise the target's offsetTop is read
+  // before the form has its final height and we land short.
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const header = document.querySelector('.site-header');
+    const offset = (header?.offsetHeight || 0) + 12;
+    const top = el.getBoundingClientRect().top + window.scrollY - offset;
+    window.scrollTo({ top, behavior: 'smooth' });
+  }));
+}
+
 function formatPhone(raw) {
   const d = String(raw || '').replace(/\D/g, '').slice(0, 11);
   if (d.length < 4) return d;
@@ -139,9 +153,11 @@ export async function renderHome(host, state, navigate) {
   const autoSubmit = sessionStorage.getItem('quote-auto-submit') === '1';
   sessionStorage.removeItem('quote-auto-submit');
 
-  if (location.pathname.startsWith('/quote')) {
-    document.getElementById('quote-form-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }
+  const scrollTarget =
+    location.pathname.startsWith('/quote') ? 'quote-form-panel'
+    : location.pathname.startsWith('/live') ? 'camera-panel'
+    : null;
+  if (scrollTarget) scrollToPanel(scrollTarget);
 
   if (restored && authed && autoSubmit) {
     setTimeout(() => document.getElementById('submit-btn')?.click(), 400);
