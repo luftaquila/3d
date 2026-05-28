@@ -98,7 +98,9 @@ async function build() {
   await app.register(fastifyMultipart, {
     limits: {
       fileSize: config.limits.fileSizeBytes,
-      files: config.limits.maxFilesPerQuote,
+      // each STL upload carries an accompanying thumb PNG part, so the
+      // multipart-level cap must allow 2 file parts per quote file.
+      files: config.limits.maxFilesPerQuote * 2,
       fields: 100,
     },
   });

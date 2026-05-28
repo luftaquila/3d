@@ -201,6 +201,12 @@ export default async function quoteRoutes(app) {
     } catch (err) {
       req.log.warn({ err }, 'multipart parsing failed');
       await cleanupUploads(acceptedFiles);
+      if (err?.code === 'FST_FILES_LIMIT') {
+        return reply.code(413).send({ error: `파일 개수 제한(${config.limits.maxFilesPerQuote}) 초과` });
+      }
+      if (err?.code === 'FST_REQ_FILE_TOO_LARGE') {
+        return reply.code(413).send({ error: `파일 크기 제한(${config.limits.fileSizeBytes}) 초과` });
+      }
       return reply.code(400).send({ error: '업로드 처리 중 오류가 발생했습니다.' });
     }
 

@@ -37,7 +37,7 @@ export async function renderMy(host, state) {
     </section>
   `;
 
-  for (const q of quotes) wireQuote(q);
+  for (const q of quotes) wireQuote(q, host, state);
   wireWarningBadges(host);
 
   document.getElementById('withdraw-btn')?.addEventListener('click', async () => {
@@ -52,7 +52,7 @@ export async function renderMy(host, state) {
   });
 }
 
-function wireQuote(q) {
+function wireQuote(q, host, state) {
   const del = document.getElementById(`del-btn-${q.id}`);
 
   document.getElementById(`dl-all-${q.id}`)?.addEventListener('click', () => downloadAllFiles(q.files));
@@ -66,12 +66,15 @@ function wireQuote(q) {
   });
 
   del?.addEventListener('click', async () => {
+    if (del.disabled) return;
     if (!confirm('이 견적과 파일을 모두 삭제할까요?')) return;
+    del.disabled = true;
     try {
       await api(`/api/my-quotes/${q.id}`, { method: 'DELETE' });
       toast('삭제되었습니다.', 'success');
-      location.reload();
+      await renderMy(host, state);
     } catch (err) {
+      del.disabled = false;
       toast(err.message, 'error');
     }
   });
