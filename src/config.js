@@ -27,6 +27,14 @@ export const config = {
     fromEmail: optional('BREVO_FROM_EMAIL', ''),
     fromName: optional('BREVO_FROM_NAME', '3D Print Service'),
   },
+  sens: {
+    // Naver Cloud Platform SENS v2 (SMS). All optional — when any is missing
+    // the SMS feature stays disabled and send attempts are rejected.
+    accessKey: optional('SENS_ACCESS_KEY', ''),
+    secretKey: optional('SENS_SECRET_KEY', ''),
+    serviceId: optional('SENS_SERVICE_ID', ''),
+    fromNumber: optional('SENS_FROM_NUMBER', ''),
+  },
   homeassistant: {
     url: optional('HA_URL', ''),
     token: optional('HA_TOKEN', ''),

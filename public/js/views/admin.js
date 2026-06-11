@@ -1,5 +1,6 @@
 import { api, toast, loginRedirect, fmtBytes, fmtDate } from '../api.js';
 import { renderWarningBadge, wireWarningBadges } from '../watertight-badge.js';
+import { estimateFilament } from '../filament.js';
 
 export async function renderAdmin(host, state) {
   if (!state.session?.authenticated) {
@@ -125,18 +126,21 @@ async function backfillOne(f, generateThumbnail) {
   const res = await fetch(f.stlUrl, { credentials: 'same-origin' });
   if (!res.ok) throw new Error(`STL fetch ${res.status}`);
   const buf = await res.arrayBuffer();
-  const { dataUrl, isWatertight, boundaryEdges, nonManifoldEdges } = await generateThumbnail(buf);
+  const { dataUrl, isWatertight, boundaryEdges, nonManifoldEdges, volume } = await generateThumbnail(buf);
 
   const form = new FormData();
   if (f.missingThumb) {
     form.append('thumb', dataUrlToBlob(dataUrl), `${f.filename}.png`);
   }
-  if (f.missingWatertight) {
-    form.append('watertight', JSON.stringify({
-      isWatertight,
-      boundaryEdges,
-      nonManifoldEdges,
-    }));
+  if (f.missingWatertight || f.missingVolume) {
+    const meta = {};
+    if (f.missingWatertight) {
+      meta.isWatertight = isWatertight;
+      meta.boundaryEdges = boundaryEdges;
+      meta.nonManifoldEdges = nonManifoldEdges;
+    }
+    if (f.missingVolume && Number.isFinite(volume)) meta.volume = volume;
+    form.append('watertight', JSON.stringify(meta));
   }
   await api(`/api/admin/backfill/update/${encodeURIComponent(f.quoteId)}/${encodeURIComponent(f.fileId)}`, {
     method: 'POST',
@@ -348,6 +352,39 @@ function renderAdminQuote(q, fieldMap) {
         ${q.files.map((f, i) => renderAdminFileCard(q.id, f, i >= 4 && q.files.length >= 5)).join('')}
       </div>
       ${q.files.length >= 5 ? `<button class="btn ghost show-more-admin" data-qid="${q.id}" style="margin-top:8px;font-size:12px;padding:4px 12px;">+${q.files.length - 4}개 더보기</button>` : ''}
+      ${renderQuoteCalc(q)}
+    </div>
+  `;
+}
+
+function numVal(v) { return v === null || v === undefined ? '' : v; }
+
+function renderQuoteCalc(q) {
+  return `
+    <div class="quote-calc" data-qid="${q.id}">
+      <div class="quote-calc-grid">
+        <label>필라멘트 (g)<input type="number" step="0.1" min="0" data-calc="filamentG" value="${numVal(q.filamentG)}"></label>
+        <label>필라멘트 (m)<input type="number" step="0.01" min="0" data-calc="filamentM" value="${numVal(q.filamentM)}"></label>
+        <label>비용 (원)<input type="number" step="1" min="0" data-calc="cost" value="${numVal(q.cost)}"></label>
+        <label>할인 (원)<input type="number" step="1" min="0" data-calc="discount" value="${numVal(q.discount)}"></label>
+        <label>최종 비용 (원)<input type="number" step="1" min="0" data-calc="finalCost" value="${numVal(q.finalCost)}"></label>
+      </div>
+      <label class="quote-calc-comment">코멘트<textarea data-calc="comment" rows="2">${escapeHtml(q.comment ?? '')}</textarea></label>
+      <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center;">
+        <button class="btn secondary calc-estimate" data-qid="${q.id}" style="padding:4px 12px;font-size:12px;">부피로 추정값 채우기</button>
+        <button class="btn calc-save" data-qid="${q.id}" style="padding:4px 12px;font-size:12px;">견적 저장</button>
+      </div>
+      <div class="quote-sms">
+        <div class="row" style="justify-content:space-between;align-items:center;gap:8px;">
+          <strong class="small">SMS 발송</strong>
+          <button class="btn ghost sms-fill" data-qid="${q.id}" style="padding:2px 10px;font-size:11px;">견적 내용 불러오기</button>
+        </div>
+        <textarea class="sms-text" data-qid="${q.id}" rows="5" placeholder="고객에게 보낼 문자 내용"></textarea>
+        <div class="row" style="justify-content:space-between;align-items:center;gap:8px;">
+          <span class="muted small sms-count" data-qid="${q.id}"></span>
+          <button class="btn accent sms-send" data-qid="${q.id}" style="padding:4px 12px;font-size:12px;">SMS 전송</button>
+        </div>
+      </div>
     </div>
   `;
 }
@@ -426,6 +463,8 @@ function wireAdminQuote(q) {
       } catch (err) { toast(err.message, 'error'); }
     });
   });
+
+  wireQuoteCalc(q);
 }
 
 async function downloadAllFiles(files) {
@@ -457,3 +496,118 @@ function escapeHtml(s) {
   }[c]));
 }
 function escapeAttr(s) { return escapeHtml(s); }
+
+// SMS/LMS byte rule: ASCII 1 byte, everything else (Korean etc.) 2 bytes.
+function smsByteLength(str) {
+  let bytes = 0;
+  for (const ch of String(str)) bytes += ch.codePointAt(0) <= 0x7f ? 1 : 2;
+  return bytes;
+}
+function fmtWon(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n.toLocaleString('ko-KR') : '';
+}
+function hasNum(v) {
+  return v !== '' && v !== null && v !== undefined && Number.isFinite(Number(v));
+}
+
+// Build the default SMS body from quote calc values; only includes set fields.
+function composeSms(d) {
+  const lines = ['[3D 프린팅 견적]', `${(d.name || '고객')}님, 견적 안내드립니다.`];
+  const fparts = [];
+  if (hasNum(d.filamentG) && Number(d.filamentG) > 0) fparts.push(`${Number(d.filamentG)}g`);
+  if (hasNum(d.filamentM) && Number(d.filamentM) > 0) fparts.push(`${Number(d.filamentM)}m`);
+  if (fparts.length) lines.push(`- 필라멘트: ${fparts.join(' / ')}`);
+  if (hasNum(d.cost)) lines.push(`- 비용: ${fmtWon(d.cost)}원`);
+  if (hasNum(d.discount) && Number(d.discount) > 0) lines.push(`- 할인: ${fmtWon(d.discount)}원`);
+  if (hasNum(d.finalCost)) lines.push(`- 최종 금액: ${fmtWon(d.finalCost)}원`);
+  const comment = (d.comment ?? '').trim();
+  if (comment) lines.push(comment);
+  return lines.join('\n');
+}
+
+function readCalcInputs(calcEl) {
+  const out = {};
+  calcEl.querySelectorAll('[data-calc]').forEach((el) => { out[el.dataset.calc] = el.value; });
+  return out;
+}
+
+function updateSmsCount(calcEl) {
+  const ta = calcEl.querySelector('.sms-text');
+  const countEl = calcEl.querySelector('.sms-count');
+  if (!ta || !countEl) return;
+  const bytes = smsByteLength(ta.value);
+  countEl.textContent = `${bytes} 바이트 · ${ta.value.length}자 · ${bytes <= 90 ? 'SMS' : 'LMS'}`;
+}
+
+function wireQuoteCalc(q) {
+  const calcEl = document.querySelector(`.quote-calc[data-qid="${q.id}"]`);
+  if (!calcEl) return;
+
+  const smsText = calcEl.querySelector('.sms-text');
+  // Prefill SMS body from the stored quote, then keep the byte counter live.
+  smsText.value = composeSms({
+    name: q.name,
+    filamentG: q.filamentG, filamentM: q.filamentM,
+    cost: q.cost, discount: q.discount, finalCost: q.finalCost,
+    comment: q.comment,
+  });
+  updateSmsCount(calcEl);
+  smsText.addEventListener('input', () => updateSmsCount(calcEl));
+
+  // Auto-suggest final cost = cost − discount as the admin types (still editable).
+  const costEl = calcEl.querySelector('[data-calc="cost"]');
+  const discountEl = calcEl.querySelector('[data-calc="discount"]');
+  const finalEl = calcEl.querySelector('[data-calc="finalCost"]');
+  const syncFinal = () => {
+    if (!hasNum(costEl.value)) return;
+    const final = Math.max(0, Math.round(Number(costEl.value) - (hasNum(discountEl.value) ? Number(discountEl.value) : 0)));
+    finalEl.value = String(final);
+  };
+  costEl.addEventListener('input', syncFinal);
+  discountEl.addEventListener('input', syncFinal);
+
+  calcEl.querySelector('.calc-estimate')?.addEventListener('click', () => {
+    const totalVolume = q.files.reduce((acc, f) => acc + (Number(f.volumeMm3) || 0), 0);
+    if (totalVolume <= 0) return toast('부피 정보가 없습니다. 설정의 "누락 정보 일괄 갱신"을 먼저 실행하세요.', 'error');
+    const est = estimateFilament(totalVolume);
+    calcEl.querySelector('[data-calc="filamentG"]').value = est.grams.toFixed(est.grams < 10 ? 1 : 0);
+    calcEl.querySelector('[data-calc="filamentM"]').value = est.meters.toFixed(2);
+    toast('추정값을 채웠습니다 (충전율 5% 기준, 수정 가능).', 'info');
+  });
+
+  calcEl.querySelector('.calc-save')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    try {
+      await api(`/api/admin/quotes/${q.id}`, { method: 'PATCH', body: readCalcInputs(calcEl) });
+      toast('견적이 저장되었습니다.', 'success');
+    } catch (err) {
+      toast(`저장 실패: ${err.message}`, 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  calcEl.querySelector('.sms-fill')?.addEventListener('click', () => {
+    const v = readCalcInputs(calcEl);
+    smsText.value = composeSms({ name: q.name, ...v });
+    updateSmsCount(calcEl);
+  });
+
+  calcEl.querySelector('.sms-send')?.addEventListener('click', async (e) => {
+    const message = smsText.value.trim();
+    if (!message) return toast('메시지를 입력해주세요.', 'error');
+    if (!confirm(`${q.phone} 번호로 SMS를 전송합니다. 계속할까요?`)) return;
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    try {
+      await api(`/api/admin/quotes/${q.id}/send-sms`, { method: 'POST', body: { message } });
+      toast('SMS를 전송했습니다.', 'success');
+    } catch (err) {
+      toast(`전송 실패: ${err.message}`, 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}

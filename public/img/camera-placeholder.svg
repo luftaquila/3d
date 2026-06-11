@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-label="카메라 연결 중">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1c1c1e"/>
+      <stop offset="1" stop-color="#0d0d0f"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="720" fill="url(#bg)"/>
+  <g transform="translate(640 320)" fill="none" stroke="#5b6066" stroke-width="9" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="-120" y="-78" width="200" height="156" rx="22"/>
+    <path d="M80 -36 L150 -74 L150 74 L80 36 Z"/>
+    <circle cx="-20" cy="0" r="34" stroke="#3f4348"/>
+  </g>
+  <text x="640" y="470" text-anchor="middle" fill="#8a9099"
+        font-family="'Apple SD Gothic Neo','Noto Sans KR','Malgun Gothic',sans-serif"
+        font-size="46" font-weight="600">카메라 연결 중…</text>
+  <text x="640" y="528" text-anchor="middle" fill="#5b6066"
+        font-family="'Apple SD Gothic Neo','Noto Sans KR','Malgun Gothic',sans-serif"
+        font-size="28">잠시만 기다려주세요</text>
+</svg>

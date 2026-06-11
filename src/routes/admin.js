@@ -4,7 +4,8 @@ import { ulid } from 'ulid';
 import { requireAdmin, requireCsrfHeader } from '../auth.js';
 import { openDatabase } from '../db.js';
 import { config } from '../config.js';
-import { isUlid } from '../log-utils.js';
+import { isUlid, maskPhone } from '../log-utils.js';
+import { sendSms, sensConfigured, smsByteLength } from '../sens.js';
 
 const FIELD_TYPES = new Set(['text', 'textarea', 'checkbox', 'notice']);
 
@@ -41,6 +42,8 @@ export default async function adminRoutes(app) {
     const rows = db.prepare(`
       SELECT q.id, q.phone, q.name, q.status, q.answers_json AS answersJson,
              q.created_at AS createdAt, q.deleted_at AS deletedAt,
+             q.filament_g AS filamentG, q.filament_m AS filamentM,
+             q.cost, q.discount, q.final_cost AS finalCost, q.comment,
              COALESCE(u.withdrawn_email, u.email) AS userEmail,
              u.name AS userName,
              u.withdrawn_at AS userWithdrawnAt
@@ -54,7 +57,8 @@ export default async function adminRoutes(app) {
              thumb_path AS thumbPath, deleted_at AS deletedAt,
              is_watertight AS isWatertight,
              boundary_edges AS boundaryEdges,
-             non_manifold_edges AS nonManifoldEdges
+             non_manifold_edges AS nonManifoldEdges,
+             volume_mm3 AS volumeMm3
       FROM quote_files
       WHERE quote_id IN (${rows.map(() => '?').join(',') || "''"})
       ORDER BY created_at ASC
@@ -78,6 +82,12 @@ export default async function adminRoutes(app) {
         createdAt: q.createdAt,
         deletedAt: q.deletedAt,
         userWithdrawnAt: q.userWithdrawnAt,
+        filamentG: q.filamentG,
+        filamentM: q.filamentM,
+        cost: q.cost,
+        discount: q.discount,
+        finalCost: q.finalCost,
+        comment: q.comment,
         files: files.filter((f) => f.quoteId === q.id).map((f) => ({
           id: f.id,
           filename: f.filename,
@@ -90,6 +100,7 @@ export default async function adminRoutes(app) {
           isWatertight: f.isWatertight === null || f.isWatertight === undefined ? null : !!f.isWatertight,
           boundaryEdges: f.boundaryEdges ?? null,
           nonManifoldEdges: f.nonManifoldEdges ?? null,
+          volumeMm3: f.volumeMm3 ?? null,
         })),
       })),
     };
@@ -115,13 +126,84 @@ export default async function adminRoutes(app) {
     return { ok: true };
   });
 
+  // Admin-entered quote calculation. Full replace of the six fields; an empty
+  // or missing value clears the column. Numbers must be non-negative finite.
+  app.patch('/api/admin/quotes/:id', {
+    preHandler: [requireAdmin, requireCsrfHeader],
+  }, async (req, reply) => {
+    const { id } = req.params;
+    if (!isUlid(id)) return reply.code(400).send({ error: 'invalid id' });
+    const body = req.body ?? {};
+
+    const parseNum = (v, int) => {
+      if (v === null || v === undefined || v === '') return { ok: true, value: null };
+      const n = Number(v);
+      if (!Number.isFinite(n) || n < 0) return { ok: false };
+      return { ok: true, value: int ? Math.round(n) : n };
+    };
+    const filamentG = parseNum(body.filamentG, false);
+    const filamentM = parseNum(body.filamentM, false);
+    const cost = parseNum(body.cost, true);
+    const discount = parseNum(body.discount, true);
+    const finalCost = parseNum(body.finalCost, true);
+    if ([filamentG, filamentM, cost, discount, finalCost].some((r) => !r.ok)) {
+      return reply.code(400).send({ error: '숫자 값이 올바르지 않습니다.' });
+    }
+    let comment = body.comment;
+    if (comment === undefined || comment === null || comment === '') comment = null;
+    else {
+      comment = String(comment);
+      if (comment.length > 2000) return reply.code(400).send({ error: '코멘트가 너무 깁니다.' });
+    }
+
+    const db = openDatabase();
+    const res = db.prepare(`
+      UPDATE quotes
+      SET filament_g = ?, filament_m = ?, cost = ?, discount = ?, final_cost = ?, comment = ?
+      WHERE id = ?
+    `).run(filamentG.value, filamentM.value, cost.value, discount.value, finalCost.value, comment, id);
+    if (res.changes === 0) return reply.code(404).send({ error: 'not found' });
+    return { ok: true };
+  });
+
+  // Send an admin-composed SMS to the quote's contact number via Naver SENS.
+  app.post('/api/admin/quotes/:id/send-sms', {
+    preHandler: [requireAdmin, requireCsrfHeader],
+    config: { rateLimit: { max: 30, timeWindow: '1 hour' } },
+  }, async (req, reply) => {
+    const { id } = req.params;
+    if (!isUlid(id)) return reply.code(400).send({ error: 'invalid id' });
+    if (!sensConfigured()) return reply.code(400).send({ error: 'SMS가 설정되지 않았습니다.' });
+
+    const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
+    if (!message) return reply.code(400).send({ error: '메시지를 입력해주세요.' });
+    if (smsByteLength(message) > 2000) {
+      return reply.code(400).send({ error: '메시지가 너무 깁니다 (LMS 2000바이트 초과).' });
+    }
+
+    const db = openDatabase();
+    const quote = db.prepare('SELECT phone FROM quotes WHERE id = ?').get(id);
+    if (!quote) return reply.code(404).send({ error: 'not found' });
+    const digits = String(quote.phone || '').replace(/\D/g, '');
+    if (digits.length < 9) return reply.code(400).send({ error: '전화번호가 올바르지 않습니다.' });
+
+    const result = await sendSms(req.log, { to: digits, content: message });
+    if (!result.ok) {
+      req.log.warn({ quoteId: id, phone: maskPhone(quote.phone), status: result.status }, 'admin sms send failed');
+      return reply.code(502).send({ error: `SMS 전송 실패 (${result.status || 'network'})` });
+    }
+    req.log.info({ quoteId: id, phone: maskPhone(quote.phone) }, 'admin sms sent');
+    return { ok: true };
+  });
+
   app.get('/api/admin/backfill/list', { preHandler: requireAdmin }, async () => {
     const db = openDatabase();
     const rows = db.prepare(`
       SELECT qf.id, qf.quote_id AS quoteId, qf.filename,
              qf.file_path AS filePath,
              qf.thumb_path AS thumbPath,
-             qf.is_watertight AS isWatertight
+             qf.is_watertight AS isWatertight,
+             qf.volume_mm3 AS volumeMm3
       FROM quote_files qf
       JOIN quotes q ON q.id = qf.quote_id
       WHERE qf.deleted_at IS NULL
@@ -139,7 +221,8 @@ export default async function adminRoutes(app) {
       }
       const missingThumb = !r.thumbPath || thumbStale;
       const missingWatertight = r.isWatertight === null || r.isWatertight === undefined;
-      if (!missingThumb && !missingWatertight) continue;
+      const missingVolume = r.volumeMm3 === null || r.volumeMm3 === undefined;
+      if (!missingThumb && !missingWatertight && !missingVolume) continue;
       files.push({
         quoteId: r.quoteId,
         fileId: r.id,
@@ -147,6 +230,7 @@ export default async function adminRoutes(app) {
         stlUrl: `/uploads/${r.quoteId}/${r.id}.stl`,
         missingThumb,
         missingWatertight,
+        missingVolume,
       });
     }
     return { files };
@@ -167,6 +251,7 @@ export default async function adminRoutes(app) {
 
     let newThumbPath = null;
     let watertight = null;
+    let volumeMm3 = null;
 
     try {
       for await (const part of req.parts()) {
@@ -174,11 +259,14 @@ export default async function adminRoutes(app) {
           const value = typeof part.value === 'string' ? part.value : '';
           try {
             const data = JSON.parse(value);
-            watertight = {
-              isWatertight: typeof data.isWatertight === 'boolean' ? data.isWatertight : null,
-              boundaryEdges: Number.isFinite(data.boundaryEdges) ? Math.max(0, Math.trunc(data.boundaryEdges)) : 0,
-              nonManifoldEdges: Number.isFinite(data.nonManifoldEdges) ? Math.max(0, Math.trunc(data.nonManifoldEdges)) : 0,
-            };
+            if (typeof data.isWatertight === 'boolean') {
+              watertight = {
+                isWatertight: data.isWatertight,
+                boundaryEdges: Number.isFinite(data.boundaryEdges) ? Math.max(0, Math.trunc(data.boundaryEdges)) : 0,
+                nonManifoldEdges: Number.isFinite(data.nonManifoldEdges) ? Math.max(0, Math.trunc(data.nonManifoldEdges)) : 0,
+              };
+            }
+            if (Number.isFinite(data.volume) && data.volume >= 0) volumeMm3 = data.volume;
           } catch { /* ignore malformed */ }
           continue;
         }
@@ -214,7 +302,7 @@ export default async function adminRoutes(app) {
       return reply.code(400).send({ error: 'upload error' });
     }
 
-    if (!newThumbPath && !watertight) {
+    if (!newThumbPath && !watertight && volumeMm3 === null) {
       return reply.code(400).send({ error: 'nothing to update' });
     }
 
@@ -229,16 +317,20 @@ export default async function adminRoutes(app) {
           SET is_watertight = ?, boundary_edges = ?, non_manifold_edges = ?
           WHERE id = ? AND quote_id = ?
         `).run(
-          watertight.isWatertight === null ? null : (watertight.isWatertight ? 1 : 0),
+          watertight.isWatertight ? 1 : 0,
           watertight.boundaryEdges,
           watertight.nonManifoldEdges,
           fileId, quoteId,
         );
       }
+      if (volumeMm3 !== null) {
+        db.prepare('UPDATE quote_files SET volume_mm3 = ? WHERE id = ? AND quote_id = ?')
+          .run(volumeMm3, fileId, quoteId);
+      }
     });
     tx();
 
-    return { ok: true, updated: { thumb: !!newThumbPath, watertight: !!watertight } };
+    return { ok: true, updated: { thumb: !!newThumbPath, watertight: !!watertight, volume: volumeMm3 !== null } };
   });
 
   app.delete('/api/admin/quotes/:id/files/:fileId/model', {

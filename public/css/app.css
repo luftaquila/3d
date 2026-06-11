@@ -407,6 +407,17 @@ input:focus, textarea:focus, select:focus {
   color: var(--text-muted);
   font-size: 13px;
 }
+.viewer-legend .legend-cost {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+}
+.viewer-legend .legend-note {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.35;
+  opacity: 0.85;
+}
 .viewer-legend-warn {
   display: flex;
   flex-direction: column;
@@ -595,12 +606,76 @@ input:focus, textarea:focus, select:focus {
 .camera-card video,
 .camera-card img {
   width: 100%;
+  height: auto;
+  aspect-ratio: 16 / 9;
   max-height: 520px;
-  background: #000;
+  /* Placeholder fills the reserved box until the first MJPEG frame paints over
+     it; also shown again if the stream drops (src removed / error). */
+  background: #000 url('/img/camera-placeholder.svg') center / contain no-repeat;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-light);
   display: block;
   object-fit: contain;
+}
+
+/* Admin quote calculation + SMS */
+.quote-calc {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-light);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.quote-calc-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+}
+.quote-calc-grid label,
+.quote-calc-comment {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.quote-calc input,
+.quote-calc textarea {
+  font-size: 13px;
+}
+.quote-sms {
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border-light);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.quote-sms .sms-text {
+  font-size: 13px;
+  min-height: 96px;
+  font-family: var(--font-mono);
+}
+
+/* Customer-facing quote summary (필라멘트/비용/코멘트) */
+.quote-summary {
+  margin: 8px 0;
+  padding: 10px 12px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.quote-summary-comment {
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-light);
+  color: var(--text-secondary);
+  white-space: pre-wrap;
 }
 
 .se-map-card {

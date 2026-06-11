@@ -399,13 +399,14 @@ function wireQuoteForm(fields, state, navigate) {
       renderCards();
       try {
         const buf = await readBuffer(f);
-        const { dataUrl, triangleCount, isWatertight, boundaryEdges, nonManifoldEdges } = await generateThumbnail(buf);
+        const { dataUrl, triangleCount, isWatertight, boundaryEdges, nonManifoldEdges, volume } = await generateThumbnail(buf);
         entries.set(f.name, {
           thumb: dataUrl,
           tris: triangleCount,
           isWatertight,
           boundaryEdges,
           nonManifoldEdges,
+          volume,
         });
       } catch (err) {
         console.warn('thumbnail failed', f.name, err);
@@ -515,12 +516,15 @@ function wireQuoteForm(fields, state, navigate) {
           form.append('thumb', dataUrlToBlob(ent.thumb), `${f.name}.png`);
         } catch { /* ignore, skip thumb */ }
       }
-      if (ent && typeof ent.isWatertight === 'boolean') {
-        form.append('watertight', JSON.stringify({
-          isWatertight: ent.isWatertight,
-          boundaryEdges: ent.boundaryEdges ?? 0,
-          nonManifoldEdges: ent.nonManifoldEdges ?? 0,
-        }));
+      if (ent) {
+        const meta = {};
+        if (typeof ent.isWatertight === 'boolean') {
+          meta.isWatertight = ent.isWatertight;
+          meta.boundaryEdges = ent.boundaryEdges ?? 0;
+          meta.nonManifoldEdges = ent.nonManifoldEdges ?? 0;
+        }
+        if (Number.isFinite(ent.volume)) meta.volume = ent.volume;
+        if (Object.keys(meta).length) form.append('watertight', JSON.stringify(meta));
       }
     }
 

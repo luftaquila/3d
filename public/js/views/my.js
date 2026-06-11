@@ -118,6 +118,26 @@ function renderAnswers(answers, fieldMap) {
   `;
 }
 
+function renderQuoteSummary(q) {
+  const has = (v) => v !== null && v !== undefined && v !== '';
+  const rows = [];
+  const fparts = [];
+  if (has(q.filamentG)) fparts.push(`${q.filamentG}g`);
+  if (has(q.filamentM)) fparts.push(`${q.filamentM}m`);
+  if (fparts.length) rows.push(['필라멘트', fparts.join(' / ')]);
+  if (has(q.cost)) rows.push(['비용', `${Number(q.cost).toLocaleString('ko-KR')}원`]);
+  if (has(q.discount)) rows.push(['할인', `${Number(q.discount).toLocaleString('ko-KR')}원`]);
+  if (has(q.finalCost)) rows.push(['최종 비용', `${Number(q.finalCost).toLocaleString('ko-KR')}원`]);
+  const comment = (q.comment ?? '').trim();
+  if (!rows.length && !comment) return '';
+  return `
+    <div class="quote-summary">
+      ${rows.map(([k, v]) => `<div><span class="qa-label">${k}:</span> ${escapeHtml(v)}</div>`).join('')}
+      ${comment ? `<div class="quote-summary-comment">${escapeHtml(comment)}</div>` : ''}
+    </div>
+  `;
+}
+
 function renderQuote(q, fieldMap) {
   const fileCount = q.files.length;
   return `
@@ -137,6 +157,7 @@ function renderQuote(q, fieldMap) {
         </div>
       </div>
       ${renderAnswers(q.answers, fieldMap)}
+      ${renderQuoteSummary(q)}
       <div class="file-grid" id="files-${q.id}">
         ${q.files.map((f, i) => renderFileCard(q.id, f, i >= 4 && q.files.length >= 5)).join('')}
       </div>

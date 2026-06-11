@@ -92,6 +92,26 @@ function migrate(db) {
     db.exec('ALTER TABLE quotes ADD COLUMN deleted_at INTEGER');
     db.exec('CREATE INDEX IF NOT EXISTS idx_quotes_deleted ON quotes(deleted_at)');
   }
+  // Admin-entered quote calculation: filament usage (g/m), pricing (KRW), comment.
+  // All nullable — existing quotes read back as NULL and render as blank.
+  if (!quoteCols.find((c) => c.name === 'filament_g')) {
+    db.exec('ALTER TABLE quotes ADD COLUMN filament_g REAL');
+  }
+  if (!quoteCols.find((c) => c.name === 'filament_m')) {
+    db.exec('ALTER TABLE quotes ADD COLUMN filament_m REAL');
+  }
+  if (!quoteCols.find((c) => c.name === 'cost')) {
+    db.exec('ALTER TABLE quotes ADD COLUMN cost INTEGER');
+  }
+  if (!quoteCols.find((c) => c.name === 'discount')) {
+    db.exec('ALTER TABLE quotes ADD COLUMN discount INTEGER');
+  }
+  if (!quoteCols.find((c) => c.name === 'final_cost')) {
+    db.exec('ALTER TABLE quotes ADD COLUMN final_cost INTEGER');
+  }
+  if (!quoteCols.find((c) => c.name === 'comment')) {
+    db.exec('ALTER TABLE quotes ADD COLUMN comment TEXT');
+  }
   const fileCols = db.prepare('PRAGMA table_info(quote_files)').all();
   if (!fileCols.find((c) => c.name === 'is_watertight')) {
     db.exec('ALTER TABLE quote_files ADD COLUMN is_watertight INTEGER');
@@ -101,5 +121,9 @@ function migrate(db) {
   }
   if (!fileCols.find((c) => c.name === 'non_manifold_edges')) {
     db.exec('ALTER TABLE quote_files ADD COLUMN non_manifold_edges INTEGER');
+  }
+  // STL volume (mm³) from the client WASM parser — basis for filament estimates.
+  if (!fileCols.find((c) => c.name === 'volume_mm3')) {
+    db.exec('ALTER TABLE quote_files ADD COLUMN volume_mm3 REAL');
   }
 }

@@ -45,7 +45,9 @@ export default async function quoteRoutes(app) {
   app.get('/api/my-quotes', { preHandler: requireAuth }, async (req) => {
     const db = openDatabase();
     const quotes = db.prepare(`
-      SELECT id, phone, name, status, answers_json AS answersJson, created_at AS createdAt
+      SELECT id, phone, name, status, answers_json AS answersJson, created_at AS createdAt,
+             filament_g AS filamentG, filament_m AS filamentM,
+             cost, discount, final_cost AS finalCost, comment
       FROM quotes
       WHERE user_id = ? AND deleted_at IS NULL
       ORDER BY created_at DESC
@@ -56,7 +58,8 @@ export default async function quoteRoutes(app) {
              thumb_path AS thumbPath, deleted_at AS deletedAt,
              is_watertight AS isWatertight,
              boundary_edges AS boundaryEdges,
-             non_manifold_edges AS nonManifoldEdges
+             non_manifold_edges AS nonManifoldEdges,
+             volume_mm3 AS volumeMm3
       FROM quote_files
       WHERE quote_id IN (${quotes.map(() => '?').join(',') || "''"})
       ORDER BY created_at ASC
@@ -69,6 +72,12 @@ export default async function quoteRoutes(app) {
         status: q.status,
         answers: JSON.parse(q.answersJson),
         createdAt: q.createdAt,
+        filamentG: q.filamentG,
+        filamentM: q.filamentM,
+        cost: q.cost,
+        discount: q.discount,
+        finalCost: q.finalCost,
+        comment: q.comment,
         files: files.filter((f) => f.quoteId === q.id).map(fileView),
       })),
     };
@@ -106,7 +115,7 @@ export default async function quoteRoutes(app) {
           else if (key === 'name') name = value.trim();
           else if (key === 'consent') consented = value === '1' || value === 'true' || value === 'on';
           else if (key.startsWith('answer.')) answers[key.slice(7)] = value;
-          else if (key === 'watertight') attachWatertight(acceptedFiles, value);
+          else if (key === 'watertight') attachFileMeta(acceptedFiles, value);
           continue;
         }
 
@@ -196,6 +205,7 @@ export default async function quoteRoutes(app) {
           isWatertight: null,
           boundaryEdges: null,
           nonManifoldEdges: null,
+          volumeMm3: null,
         });
       }
     } catch (err) {
@@ -249,8 +259,8 @@ export default async function quoteRoutes(app) {
     `);
     const insertFile = db.prepare(`
       INSERT INTO quote_files (id, quote_id, filename, size_bytes, triangle_count, file_path, thumb_path,
-                               is_watertight, boundary_edges, non_manifold_edges, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                               is_watertight, boundary_edges, non_manifold_edges, volume_mm3, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     let quotaExceeded = false;
@@ -267,6 +277,7 @@ export default async function quoteRoutes(app) {
           f.isWatertight === null ? null : (f.isWatertight ? 1 : 0),
           f.boundaryEdges,
           f.nonManifoldEdges,
+          f.volumeMm3,
           now,
         );
       }
@@ -395,10 +406,11 @@ function fileView(f) {
     isWatertight: f.isWatertight === null || f.isWatertight === undefined ? null : !!f.isWatertight,
     boundaryEdges: f.boundaryEdges ?? null,
     nonManifoldEdges: f.nonManifoldEdges ?? null,
+    volumeMm3: f.volumeMm3 ?? null,
   };
 }
 
-function attachWatertight(acceptedFiles, rawValue) {
+function attachFileMeta(acceptedFiles, rawValue) {
   const target = acceptedFiles[acceptedFiles.length - 1];
   if (!target) return;
   try {
@@ -406,6 +418,7 @@ function attachWatertight(acceptedFiles, rawValue) {
     if (typeof data.isWatertight === 'boolean') target.isWatertight = data.isWatertight;
     if (Number.isFinite(data.boundaryEdges)) target.boundaryEdges = Math.max(0, Math.trunc(data.boundaryEdges));
     if (Number.isFinite(data.nonManifoldEdges)) target.nonManifoldEdges = Math.max(0, Math.trunc(data.nonManifoldEdges));
+    if (Number.isFinite(data.volume) && data.volume >= 0) target.volumeMm3 = data.volume;
   } catch { /* ignore malformed metadata */ }
 }
 
