@@ -82,6 +82,16 @@ function validPhone(raw) {
   return /^01[016789]\d{7,8}$/.test(d);
 }
 
+// Long-lived name/phone autofill (localStorage, separate from the per-submission
+// draft). Stores exactly what's typed — clearing a field persists the blank.
+const CONTACT_KEY = 'quote-contact';
+function loadContact() {
+  try { return JSON.parse(localStorage.getItem(CONTACT_KEY)) || {}; } catch { return {}; }
+}
+function saveContact(name, phone) {
+  try { localStorage.setItem(CONTACT_KEY, JSON.stringify({ name, phone })); } catch { /* ignore */ }
+}
+
 export async function renderHome(host, state, navigate) {
   const [homeData, cam, { fields }] = await Promise.all([
     api('/api/home'),
@@ -305,11 +315,21 @@ function wireQuoteForm(fields, state, navigate) {
   const previewList = document.getElementById('file-preview-list');
   const submitBtn = document.getElementById('submit-btn');
   const resetBtn = document.getElementById('reset-btn');
+  const nameInput = document.getElementById('f-name');
   const phoneInput = document.getElementById('f-phone');
+
+  // Restore saved contact, then persist on every edit (draft restore may still
+  // override during the login→auto-submit flow).
+  const contact = loadContact();
+  if (typeof contact.name === 'string') nameInput.value = contact.name;
+  if (typeof contact.phone === 'string') phoneInput.value = contact.phone;
+  const persistContact = () => saveContact(nameInput.value, phoneInput.value);
 
   phoneInput.addEventListener('input', () => {
     phoneInput.value = formatPhone(phoneInput.value);
+    persistContact();
   });
+  nameInput.addEventListener('input', persistContact);
 
   const consentBox = document.getElementById('consent-box');
   const consentCheckbox = document.getElementById('f-consent');
@@ -457,6 +477,7 @@ function wireQuoteForm(fields, state, navigate) {
     document.getElementById('f-name').value = '';
     document.getElementById('f-phone').value = '';
     document.getElementById('f-consent').checked = false;
+    saveContact('', '');
     for (const f of fields) {
       const el = document.getElementById(`f-${f.id}`);
       if (!el) continue;

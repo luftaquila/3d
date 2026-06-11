@@ -1,6 +1,5 @@
 import { api, toast, loginRedirect, fmtBytes, fmtDate } from '../api.js';
 import { renderWarningBadge, wireWarningBadges } from '../watertight-badge.js';
-import { estimateFilament } from '../filament.js';
 
 export async function renderAdmin(host, state) {
   if (!state.session?.authenticated) {
@@ -46,6 +45,8 @@ async function renderSettings() {
   const estInfill = settings.est_infill_pct ?? '15';
   const estPrice = settings.est_price_per_m ?? '500';
   const smsTpl = settings.sms_template ?? '';
+  const smsSubmitOn = settings.sms_submit_enabled === '1';
+  const smsSubmitTpl = settings.sms_submit_template ?? '';
   host.innerHTML = `
     <h2>설정</h2>
     <label style="display:flex;align-items:center;gap:8px;">
@@ -79,6 +80,20 @@ async function renderSettings() {
       <textarea id="sms-template" style="min-height:90px;font-family:var(--font-mono);font-size:13px;" placeholder="견적: {amount}원\n상세: {link}">${escapeHtml(smsTpl)}</textarea>
       <div class="row" style="margin-top:10px;">
         <button class="btn" id="save-sms-template">저장</button>
+      </div>
+    </div>
+
+    <div style="margin-top:24px;padding-top:20px;border-top:1px solid var(--border-light);">
+      <h3 style="margin:0 0 4px;">견적 접수 자동 문자</h3>
+      <p class="muted small" style="margin:0 0 8px;">견적 제출 완료 시 고객에게 자동 발송할 문구입니다. (치환자 없음)</p>
+      <label style="display:flex;align-items:center;gap:8px;margin:0 0 8px;">
+        <input type="checkbox" id="sms-submit-on" ${smsSubmitOn ? 'checked' : ''} style="width:auto;">
+        견적 제출 완료 시 자동 발송
+      </label>
+      <textarea id="sms-submit-template" style="min-height:90px;font-family:var(--font-mono);font-size:13px;" placeholder="예: 견적 문의가 접수되었습니다. 확인 후 연락드리겠습니다.">${escapeHtml(smsSubmitTpl)}</textarea>
+      <div class="row" style="justify-content:space-between;align-items:center;gap:8px;margin-top:6px;">
+        <span class="muted small" id="sms-submit-count"></span>
+        <button class="btn" id="save-sms-submit">저장</button>
       </div>
     </div>
 
@@ -129,6 +144,23 @@ async function renderSettings() {
         body: { sms_template: document.getElementById('sms-template').value },
       });
       toast('SMS 프리셋 저장됨', 'success');
+    } catch (err) { toast(err.message, 'error'); }
+  });
+  const submitTa = document.getElementById('sms-submit-template');
+  const submitCount = document.getElementById('sms-submit-count');
+  const updateSubmitCount = () => { submitCount.textContent = smsCountLabel(submitTa.value); };
+  updateSubmitCount();
+  submitTa.addEventListener('input', updateSubmitCount);
+  document.getElementById('save-sms-submit').addEventListener('click', async () => {
+    try {
+      await api('/api/admin/settings', {
+        method: 'PUT',
+        body: {
+          sms_submit_enabled: document.getElementById('sms-submit-on').checked ? '1' : '0',
+          sms_submit_template: submitTa.value,
+        },
+      });
+      toast('자동 문자 설정 저장됨', 'success');
     } catch (err) { toast(err.message, 'error'); }
   });
   document.getElementById('backfill-start').addEventListener('click', runBackfill);
@@ -394,10 +426,6 @@ function renderAdminQuote(q, fieldMap) {
             <span>파일 ${q.files.length}개</span>
           </div>
         </div>
-        <div class="row" style="gap:6px;">
-          ${q.files.length >= 2 ? `<button class="btn accent dl-all-admin" data-qid="${q.id}" style="padding:4px 12px;font-size:12px;">전체 다운로드</button>` : ''}
-          <button class="btn danger hard-del-quote" data-qid="${q.id}" style="padding:4px 12px;font-size:12px;">완전 삭제</button>
-        </div>
       </div>
       ${answersHtml}
       <div class="file-grid" id="files-${q.id}">
@@ -405,6 +433,10 @@ function renderAdminQuote(q, fieldMap) {
       </div>
       ${q.files.length >= 5 ? `<button class="btn ghost show-more-admin" data-qid="${q.id}" style="margin-top:8px;font-size:12px;padding:4px 12px;">+${q.files.length - 4}개 더보기</button>` : ''}
       ${renderQuoteCalc(q)}
+      <div class="row" style="justify-content:flex-end;gap:6px;margin-top:10px;">
+        ${q.files.length >= 2 ? `<button class="btn accent dl-all-admin" data-qid="${q.id}" style="padding:4px 12px;font-size:12px;">전체 다운로드</button>` : ''}
+        <button class="btn danger hard-del-quote" data-qid="${q.id}" style="padding:4px 12px;font-size:12px;">완전 삭제</button>
+      </div>
     </div>
   `;
 }
@@ -421,9 +453,8 @@ function renderQuoteCalc(q) {
         <label>최종 비용 (원)<input type="number" step="1" min="0" data-calc="finalCost" value="${numVal(q.finalCost)}"></label>
       </div>
       <label class="quote-calc-comment">코멘트<textarea data-calc="comment" rows="2">${escapeHtml(q.comment ?? '')}</textarea></label>
-      <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center;">
-        <button class="btn secondary calc-estimate" data-qid="${q.id}" style="padding:4px 12px;font-size:12px;">부피로 추정값 채우기</button>
-        <button class="btn calc-save" data-qid="${q.id}" style="padding:4px 12px;font-size:12px;">견적 저장</button>
+      <div class="row" style="justify-content:flex-end;">
+        <button class="btn accent calc-save" data-qid="${q.id}" style="padding:4px 12px;font-size:12px;">견적 저장</button>
       </div>
       <div class="quote-sms">
         <strong class="small">SMS 발송</strong>
@@ -581,12 +612,15 @@ function readCalcInputs(calcEl) {
   return out;
 }
 
+function smsCountLabel(value) {
+  const bytes = smsByteLength(value);
+  return `${bytes} B · ${value.length}자 · ${bytes <= 90 ? 'SMS' : 'LMS'}`;
+}
 function updateSmsCount(calcEl) {
   const ta = calcEl.querySelector('.sms-text');
   const countEl = calcEl.querySelector('.sms-count');
   if (!ta || !countEl) return;
-  const bytes = smsByteLength(ta.value);
-  countEl.textContent = `${bytes} 바이트 · ${ta.value.length}자 · ${bytes <= 90 ? 'SMS' : 'LMS'}`;
+  countEl.textContent = smsCountLabel(ta.value);
 }
 
 function wireQuoteCalc(q) {
@@ -600,56 +634,41 @@ function wireQuoteCalc(q) {
   const finalEl = calcEl.querySelector('[data-calc="finalCost"]');
   const floor100 = (n) => Math.max(0, Math.floor(n / 100) * 100);
 
-  // Pre-rounding cost basis: filament length × rate, else the typed cost.
-  const rawCost = () => (hasNum(mEl.value) ? Number(mEl.value) * estPricePerM
-    : (hasNum(costEl.value) ? Number(costEl.value) : null));
+  // Pre-rounding cost basis. Filament m sets it to m×단가; a manual cost edit
+  // sets it to the typed cost. Final = floor100(basis × (1 − discount%)).
+  let rawBasis = hasNum(costEl.value) ? Number(costEl.value)
+    : (hasNum(mEl.value) ? Number(mEl.value) * estPricePerM : null);
 
   // SMS body always reflects the current calc values (live, no fill button).
   function refreshSms() {
     smsText.value = composeSms({ name: q.name, ...readCalcInputs(calcEl) });
     updateSmsCount(calcEl);
   }
-  // Final = (pre-round cost × (1 − discount%)) truncated to 100원.
-  function recalcFinal() {
-    const raw = rawCost();
-    if (raw != null) {
+  function applyFinal() {
+    if (rawBasis != null) {
       const pct = hasNum(discountEl.value) ? Number(discountEl.value) : 0;
-      finalEl.value = String(floor100(raw * (1 - pct / 100)));
+      finalEl.value = String(floor100(rawBasis * (1 - pct / 100)));
     }
     refreshSms();
   }
-  // Filament m drives cost (× rate, 100원 절사) then final.
-  function recalcFromM() {
-    if (hasNum(mEl.value)) costEl.value = String(floor100(Number(mEl.value) * estPricePerM));
-    recalcFinal();
-  }
 
-  mEl.addEventListener('input', recalcFromM);
-  costEl.addEventListener('input', recalcFinal);
-  discountEl.addEventListener('input', recalcFinal);
+  // 필라멘트 m 입력 → 비용·최종 자동
+  mEl.addEventListener('input', () => {
+    rawBasis = hasNum(mEl.value) ? Number(mEl.value) * estPricePerM : null;
+    if (rawBasis != null) costEl.value = String(floor100(rawBasis));
+    applyFinal();
+  });
+  // 비용 편집 → 최종 자동 (할인 적용)
+  costEl.addEventListener('input', () => {
+    rawBasis = hasNum(costEl.value) ? Number(costEl.value) : null;
+    applyFinal();
+  });
+  // 할인율 편집 → 최종 자동
+  discountEl.addEventListener('input', applyFinal);
   finalEl.addEventListener('input', refreshSms);
   smsText.addEventListener('input', () => updateSmsCount(calcEl));
 
-  refreshSms(); // initial SMS body from rendered values
-
-  calcEl.querySelector('.calc-estimate')?.addEventListener('click', async (e) => {
-    const totalVolume = q.files.reduce((acc, f) => acc + (Number(f.volumeMm3) || 0), 0);
-    const totalSurface = q.files.reduce((acc, f) => acc + (Number(f.surfaceAreaMm2) || 0), 0);
-    if (totalVolume <= 0) return toast('부피 정보가 없습니다. 설정의 "누락 정보 일괄 갱신"을 먼저 실행하세요.', 'error');
-    const btn = e.currentTarget;
-    btn.disabled = true;
-    try {
-      const cfg = await api('/api/estimate-config');
-      const est = estimateFilament(totalVolume, totalSurface, cfg);
-      mEl.value = est.meters.toFixed(2);
-      recalcFromM();
-      toast('추정값을 채웠습니다 (표면적 기반, 수정 가능).', 'info');
-    } catch (err) {
-      toast(`추정 실패: ${err.message}`, 'error');
-    } finally {
-      btn.disabled = false;
-    }
-  });
+  refreshSms(); // initial SMS body from rendered values (don't overwrite stored final)
 
   calcEl.querySelector('.calc-save')?.addEventListener('click', async (e) => {
     const btn = e.currentTarget;

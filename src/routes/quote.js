@@ -8,6 +8,7 @@ import { openDatabase } from '../db.js';
 import { config } from '../config.js';
 import { validateStl } from '../stl-validate.js';
 import { sendQuoteNotification } from '../brevo.js';
+import { sendSms, sensConfigured } from '../sens.js';
 import { isUlid, maskEmail, maskPhone } from '../log-utils.js';
 
 const PHONE_RE = /^[0-9+\-() ]{6,24}$/;
@@ -304,6 +305,17 @@ export default async function quoteRoutes(app) {
       name,
       fileCount: acceptedFiles.length,
     }).catch(() => {});
+
+    // Optional auto-SMS to the customer on submit (admin-configurable preset).
+    try {
+      const enabled = db.prepare("SELECT value FROM settings WHERE key = 'sms_submit_enabled'").get()?.value === '1';
+      const tpl = db.prepare("SELECT value FROM settings WHERE key = 'sms_submit_template'").get()?.value || '';
+      if (enabled && tpl.trim() && sensConfigured()) {
+        sendSms(req.log, { to: phone, content: tpl }).catch(() => {});
+      }
+    } catch (err) {
+      req.log.warn({ err }, 'submit sms check failed');
+    }
 
     req.log.info({
       quoteId,

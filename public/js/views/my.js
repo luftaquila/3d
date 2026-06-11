@@ -151,10 +151,6 @@ function renderQuote(q, fieldMap) {
             <span>파일 ${fileCount}개</span>
           </div>
         </div>
-        <div class="row" style="gap:6px;">
-          ${fileCount >= 2 ? `<button class="btn accent" id="dl-all-${q.id}" style="padding:4px 12px;font-size:12px;">전체 다운로드</button>` : ''}
-          <button class="btn danger" id="del-btn-${q.id}" style="padding:4px 12px;font-size:12px;">삭제</button>
-        </div>
       </div>
       ${renderAnswers(q.answers, fieldMap)}
       ${renderQuoteSummary(q)}
@@ -162,6 +158,10 @@ function renderQuote(q, fieldMap) {
         ${q.files.map((f, i) => renderFileCard(q.id, f, i >= 4 && q.files.length >= 5)).join('')}
       </div>
       ${q.files.length >= 5 ? `<button class="btn ghost show-more" data-qid="${q.id}" style="margin-top:8px;font-size:12px;padding:4px 12px;">+${q.files.length - 4}개 더보기</button>` : ''}
+      <div class="row" style="justify-content:flex-end;gap:6px;margin-top:10px;">
+        ${fileCount >= 2 ? `<button class="btn accent" id="dl-all-${q.id}" style="padding:4px 12px;font-size:12px;">전체 다운로드</button>` : ''}
+        <button class="btn danger" id="del-btn-${q.id}" style="padding:4px 12px;font-size:12px;">삭제</button>
+      </div>
     </div>
   `;
 }
