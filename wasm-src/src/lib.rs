@@ -17,6 +17,7 @@ pub struct Mesh {
     boundary_positions: Vec<f32>,
     non_manifold_positions: Vec<f32>,
     volume: f32,
+    surface_area: f32,
 }
 
 #[wasm_bindgen]
@@ -75,6 +76,31 @@ impl Mesh {
     pub fn volume(&self) -> f32 {
         self.volume
     }
+
+    #[wasm_bindgen(getter, js_name = surfaceArea)]
+    pub fn surface_area(&self) -> f32 {
+        self.surface_area
+    }
+}
+
+fn compute_surface_area(positions: &[f32]) -> f32 {
+    // Sum of triangle areas: 0.5 * |(v1 - v0) x (v2 - v0)|. Accumulated in f64.
+    let tcount = positions.len() / 9;
+    let mut acc: f64 = 0.0;
+    for t in 0..tcount {
+        let i = t * 9;
+        let ax = (positions[i + 3] - positions[i]) as f64;
+        let ay = (positions[i + 4] - positions[i + 1]) as f64;
+        let az = (positions[i + 5] - positions[i + 2]) as f64;
+        let bx = (positions[i + 6] - positions[i]) as f64;
+        let by = (positions[i + 7] - positions[i + 1]) as f64;
+        let bz = (positions[i + 8] - positions[i + 2]) as f64;
+        let cx = ay * bz - az * by;
+        let cy = az * bx - ax * bz;
+        let cz = ax * by - ay * bx;
+        acc += (cx * cx + cy * cy + cz * cz).sqrt();
+    }
+    (acc * 0.5) as f32
 }
 
 fn compute_volume(positions: &[f32]) -> f32 {
@@ -193,6 +219,7 @@ fn parse_binary(data: &[u8]) -> Result<Mesh, JsValue> {
     let bbox_arr = bbox.to_array();
     let analysis = analyze_mesh(&positions, &bbox_arr);
     let volume = compute_volume(&positions);
+    let surface_area = compute_surface_area(&positions);
     Ok(Mesh {
         positions,
         normals,
@@ -205,6 +232,7 @@ fn parse_binary(data: &[u8]) -> Result<Mesh, JsValue> {
         boundary_positions: analysis.boundary_positions,
         non_manifold_positions: analysis.non_manifold_positions,
         volume,
+        surface_area,
     })
 }
 
@@ -264,6 +292,7 @@ fn parse_ascii(data: &[u8]) -> Result<Mesh, JsValue> {
     let bbox_arr = bbox.to_array();
     let analysis = analyze_mesh(&positions, &bbox_arr);
     let volume = compute_volume(&positions);
+    let surface_area = compute_surface_area(&positions);
     Ok(Mesh {
         positions,
         normals,
@@ -276,6 +305,7 @@ fn parse_ascii(data: &[u8]) -> Result<Mesh, JsValue> {
         boundary_positions: analysis.boundary_positions,
         non_manifold_positions: analysis.non_manifold_positions,
         volume,
+        surface_area,
     })
 }
 

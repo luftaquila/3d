@@ -122,8 +122,12 @@ function migrate(db) {
   if (!fileCols.find((c) => c.name === 'non_manifold_edges')) {
     db.exec('ALTER TABLE quote_files ADD COLUMN non_manifold_edges INTEGER');
   }
-  // STL volume (mm³) from the client WASM parser — basis for filament estimates.
+  // STL volume (mm³) and surface area (mm²) from the client WASM parser —
+  // basis for the surface-area filament estimate.
   if (!fileCols.find((c) => c.name === 'volume_mm3')) {
     db.exec('ALTER TABLE quote_files ADD COLUMN volume_mm3 REAL');
+  }
+  if (!fileCols.find((c) => c.name === 'surface_area_mm2')) {
+    db.exec('ALTER TABLE quote_files ADD COLUMN surface_area_mm2 REAL');
   }
 }

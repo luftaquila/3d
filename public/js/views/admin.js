@@ -42,6 +42,9 @@ async function renderSettings() {
   const { settings } = await api('/api/admin/settings');
   const cameraOn = settings.camera_enabled === '1';
   const homeHtml = settings.home_html ?? '';
+  const estWall = settings.est_wall_mm ?? '1.0';
+  const estInfill = settings.est_infill_pct ?? '15';
+  const estPrice = settings.est_price_per_m ?? '500';
   host.innerHTML = `
     <h2>설정</h2>
     <label style="display:flex;align-items:center;gap:8px;">
@@ -54,6 +57,19 @@ async function renderSettings() {
     <textarea id="home-html" style="min-height:220px;font-family:var(--font-mono);font-size:13px;">${escapeHtml(homeHtml)}</textarea>
     <div class="row" style="margin-top:10px;">
       <button class="btn" id="save-home-html">저장</button>
+    </div>
+
+    <div style="margin-top:24px;padding-top:20px;border-top:1px solid var(--border-light);">
+      <h3 style="margin:0 0 4px;">필라멘트 추정 보정</h3>
+      <p class="muted small" style="margin:0 0 10px;">표면적 기반 추정 파라미터입니다. 알려진 슬라이서 결과(g·m)와 맞도록 조정하세요. (밀도 1.24 g/cm³·필라멘트 1.75mm 고정)</p>
+      <div class="quote-calc-grid">
+        <label>벽 두께 (mm)<input type="number" step="0.1" min="0" id="est-wall" value="${escapeAttr(estWall)}"></label>
+        <label>충전율 (%)<input type="number" step="1" min="0" id="est-infill" value="${escapeAttr(estInfill)}"></label>
+        <label>단가 (원/m)<input type="number" step="1" min="0" id="est-price" value="${escapeAttr(estPrice)}"></label>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <button class="btn" id="save-estimate">저장</button>
+      </div>
     </div>
 
     <div style="margin-top:24px;padding-top:20px;border-top:1px solid var(--border-light);">
@@ -81,6 +97,19 @@ async function renderSettings() {
         body: { home_html: document.getElementById('home-html').value },
       });
       toast('공지 저장됨', 'success');
+    } catch (err) { toast(err.message, 'error'); }
+  });
+  document.getElementById('save-estimate').addEventListener('click', async () => {
+    try {
+      await api('/api/admin/settings', {
+        method: 'PUT',
+        body: {
+          est_wall_mm: document.getElementById('est-wall').value,
+          est_infill_pct: document.getElementById('est-infill').value,
+          est_price_per_m: document.getElementById('est-price').value,
+        },
+      });
+      toast('추정 파라미터 저장됨', 'success');
     } catch (err) { toast(err.message, 'error'); }
   });
   document.getElementById('backfill-start').addEventListener('click', runBackfill);
@@ -126,13 +155,13 @@ async function backfillOne(f, generateThumbnail) {
   const res = await fetch(f.stlUrl, { credentials: 'same-origin' });
   if (!res.ok) throw new Error(`STL fetch ${res.status}`);
   const buf = await res.arrayBuffer();
-  const { dataUrl, isWatertight, boundaryEdges, nonManifoldEdges, volume } = await generateThumbnail(buf);
+  const { dataUrl, isWatertight, boundaryEdges, nonManifoldEdges, volume, surfaceArea } = await generateThumbnail(buf);
 
   const form = new FormData();
   if (f.missingThumb) {
     form.append('thumb', dataUrlToBlob(dataUrl), `${f.filename}.png`);
   }
-  if (f.missingWatertight || f.missingVolume) {
+  if (f.missingWatertight || f.missingVolume || f.missingSurface) {
     const meta = {};
     if (f.missingWatertight) {
       meta.isWatertight = isWatertight;
@@ -140,6 +169,7 @@ async function backfillOne(f, generateThumbnail) {
       meta.nonManifoldEdges = nonManifoldEdges;
     }
     if (f.missingVolume && Number.isFinite(volume)) meta.volume = volume;
+    if (f.missingSurface && Number.isFinite(surfaceArea)) meta.surfaceArea = surfaceArea;
     form.append('watertight', JSON.stringify(meta));
   }
   await api(`/api/admin/backfill/update/${encodeURIComponent(f.quoteId)}/${encodeURIComponent(f.fileId)}`, {
@@ -567,13 +597,23 @@ function wireQuoteCalc(q) {
   costEl.addEventListener('input', syncFinal);
   discountEl.addEventListener('input', syncFinal);
 
-  calcEl.querySelector('.calc-estimate')?.addEventListener('click', () => {
+  calcEl.querySelector('.calc-estimate')?.addEventListener('click', async (e) => {
     const totalVolume = q.files.reduce((acc, f) => acc + (Number(f.volumeMm3) || 0), 0);
+    const totalSurface = q.files.reduce((acc, f) => acc + (Number(f.surfaceAreaMm2) || 0), 0);
     if (totalVolume <= 0) return toast('부피 정보가 없습니다. 설정의 "누락 정보 일괄 갱신"을 먼저 실행하세요.', 'error');
-    const est = estimateFilament(totalVolume);
-    calcEl.querySelector('[data-calc="filamentG"]').value = est.grams.toFixed(est.grams < 10 ? 1 : 0);
-    calcEl.querySelector('[data-calc="filamentM"]').value = est.meters.toFixed(2);
-    toast('추정값을 채웠습니다 (충전율 5% 기준, 수정 가능).', 'info');
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    try {
+      const cfg = await api('/api/estimate-config');
+      const est = estimateFilament(totalVolume, totalSurface, cfg);
+      calcEl.querySelector('[data-calc="filamentG"]').value = est.grams.toFixed(est.grams < 10 ? 1 : 0);
+      calcEl.querySelector('[data-calc="filamentM"]').value = est.meters.toFixed(2);
+      toast('추정값을 채웠습니다 (표면적 기반, 수정 가능).', 'info');
+    } catch (err) {
+      toast(`추정 실패: ${err.message}`, 'error');
+    } finally {
+      btn.disabled = false;
+    }
   });
 
   calcEl.querySelector('.calc-save')?.addEventListener('click', async (e) => {

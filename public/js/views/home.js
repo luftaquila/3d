@@ -399,7 +399,7 @@ function wireQuoteForm(fields, state, navigate) {
       renderCards();
       try {
         const buf = await readBuffer(f);
-        const { dataUrl, triangleCount, isWatertight, boundaryEdges, nonManifoldEdges, volume } = await generateThumbnail(buf);
+        const { dataUrl, triangleCount, isWatertight, boundaryEdges, nonManifoldEdges, volume, surfaceArea } = await generateThumbnail(buf);
         entries.set(f.name, {
           thumb: dataUrl,
           tris: triangleCount,
@@ -407,6 +407,7 @@ function wireQuoteForm(fields, state, navigate) {
           boundaryEdges,
           nonManifoldEdges,
           volume,
+          surfaceArea,
         });
       } catch (err) {
         console.warn('thumbnail failed', f.name, err);
@@ -524,6 +525,7 @@ function wireQuoteForm(fields, state, navigate) {
           meta.nonManifoldEdges = ent.nonManifoldEdges ?? 0;
         }
         if (Number.isFinite(ent.volume)) meta.volume = ent.volume;
+        if (Number.isFinite(ent.surfaceArea)) meta.surfaceArea = ent.surfaceArea;
         if (Object.keys(meta).length) form.append('watertight', JSON.stringify(meta));
       }
     }

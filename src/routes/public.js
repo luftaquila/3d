@@ -20,6 +20,23 @@ export default async function publicRoutes(app) {
     return { html: row?.value ?? '', place, mapsClientId: p.mapsClientId || null };
   });
 
+  app.get('/api/estimate-config', async () => {
+    const db = openDatabase();
+    const rows = db.prepare("SELECT key, value FROM settings WHERE key IN ('est_wall_mm','est_infill_pct','est_price_per_m')").all();
+    const m = {};
+    for (const r of rows) m[r.key] = r.value;
+    const num = (v, dflt) => {
+      const n = Number(v);
+      return Number.isFinite(n) && n >= 0 ? n : dflt;
+    };
+    // Defaults mirror ESTIMATE_DEFAULTS in public/js/filament.js.
+    return {
+      wallMm: num(m.est_wall_mm, 1.0),
+      infillPct: num(m.est_infill_pct, 15),
+      pricePerM: num(m.est_price_per_m, 500),
+    };
+  });
+
   app.get('/api/form-fields', async () => {
     const db = openDatabase();
     const rows = db.prepare(`

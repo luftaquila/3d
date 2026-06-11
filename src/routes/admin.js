@@ -58,7 +58,8 @@ export default async function adminRoutes(app) {
              is_watertight AS isWatertight,
              boundary_edges AS boundaryEdges,
              non_manifold_edges AS nonManifoldEdges,
-             volume_mm3 AS volumeMm3
+             volume_mm3 AS volumeMm3,
+             surface_area_mm2 AS surfaceAreaMm2
       FROM quote_files
       WHERE quote_id IN (${rows.map(() => '?').join(',') || "''"})
       ORDER BY created_at ASC
@@ -101,6 +102,7 @@ export default async function adminRoutes(app) {
           boundaryEdges: f.boundaryEdges ?? null,
           nonManifoldEdges: f.nonManifoldEdges ?? null,
           volumeMm3: f.volumeMm3 ?? null,
+          surfaceAreaMm2: f.surfaceAreaMm2 ?? null,
         })),
       })),
     };
@@ -203,7 +205,8 @@ export default async function adminRoutes(app) {
              qf.file_path AS filePath,
              qf.thumb_path AS thumbPath,
              qf.is_watertight AS isWatertight,
-             qf.volume_mm3 AS volumeMm3
+             qf.volume_mm3 AS volumeMm3,
+             qf.surface_area_mm2 AS surfaceAreaMm2
       FROM quote_files qf
       JOIN quotes q ON q.id = qf.quote_id
       WHERE qf.deleted_at IS NULL
@@ -222,7 +225,8 @@ export default async function adminRoutes(app) {
       const missingThumb = !r.thumbPath || thumbStale;
       const missingWatertight = r.isWatertight === null || r.isWatertight === undefined;
       const missingVolume = r.volumeMm3 === null || r.volumeMm3 === undefined;
-      if (!missingThumb && !missingWatertight && !missingVolume) continue;
+      const missingSurface = r.surfaceAreaMm2 === null || r.surfaceAreaMm2 === undefined;
+      if (!missingThumb && !missingWatertight && !missingVolume && !missingSurface) continue;
       files.push({
         quoteId: r.quoteId,
         fileId: r.id,
@@ -231,6 +235,7 @@ export default async function adminRoutes(app) {
         missingThumb,
         missingWatertight,
         missingVolume,
+        missingSurface,
       });
     }
     return { files };
@@ -252,6 +257,7 @@ export default async function adminRoutes(app) {
     let newThumbPath = null;
     let watertight = null;
     let volumeMm3 = null;
+    let surfaceAreaMm2 = null;
 
     try {
       for await (const part of req.parts()) {
@@ -267,6 +273,7 @@ export default async function adminRoutes(app) {
               };
             }
             if (Number.isFinite(data.volume) && data.volume >= 0) volumeMm3 = data.volume;
+            if (Number.isFinite(data.surfaceArea) && data.surfaceArea >= 0) surfaceAreaMm2 = data.surfaceArea;
           } catch { /* ignore malformed */ }
           continue;
         }
@@ -302,7 +309,7 @@ export default async function adminRoutes(app) {
       return reply.code(400).send({ error: 'upload error' });
     }
 
-    if (!newThumbPath && !watertight && volumeMm3 === null) {
+    if (!newThumbPath && !watertight && volumeMm3 === null && surfaceAreaMm2 === null) {
       return reply.code(400).send({ error: 'nothing to update' });
     }
 
@@ -327,10 +334,14 @@ export default async function adminRoutes(app) {
         db.prepare('UPDATE quote_files SET volume_mm3 = ? WHERE id = ? AND quote_id = ?')
           .run(volumeMm3, fileId, quoteId);
       }
+      if (surfaceAreaMm2 !== null) {
+        db.prepare('UPDATE quote_files SET surface_area_mm2 = ? WHERE id = ? AND quote_id = ?')
+          .run(surfaceAreaMm2, fileId, quoteId);
+      }
     });
     tx();
 
-    return { ok: true, updated: { thumb: !!newThumbPath, watertight: !!watertight, volume: volumeMm3 !== null } };
+    return { ok: true, updated: { thumb: !!newThumbPath, watertight: !!watertight, volume: volumeMm3 !== null, surface: surfaceAreaMm2 !== null } };
   });
 
   app.delete('/api/admin/quotes/:id/files/:fileId/model', {
@@ -438,10 +449,17 @@ export default async function adminRoutes(app) {
 
   app.put('/api/admin/settings', {
     preHandler: [requireAdmin, requireCsrfHeader],
-  }, async (req) => {
+  }, async (req, reply) => {
     const db = openDatabase();
     const body = req.body ?? {};
-    const allowed = new Set(['camera_enabled', 'home_html']);
+    const allowed = new Set(['camera_enabled', 'home_html', 'est_wall_mm', 'est_infill_pct', 'est_price_per_m']);
+    const numericKeys = new Set(['est_wall_mm', 'est_infill_pct', 'est_price_per_m']);
+    for (const [k, v] of Object.entries(body)) {
+      if (numericKeys.has(k)) {
+        const n = Number(v);
+        if (!Number.isFinite(n) || n < 0) return reply.code(400).send({ error: `잘못된 값: ${k}` });
+      }
+    }
     const upsert = db.prepare(`
       INSERT INTO settings (key, value) VALUES (?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value

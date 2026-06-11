@@ -59,7 +59,8 @@ export default async function quoteRoutes(app) {
              is_watertight AS isWatertight,
              boundary_edges AS boundaryEdges,
              non_manifold_edges AS nonManifoldEdges,
-             volume_mm3 AS volumeMm3
+             volume_mm3 AS volumeMm3,
+             surface_area_mm2 AS surfaceAreaMm2
       FROM quote_files
       WHERE quote_id IN (${quotes.map(() => '?').join(',') || "''"})
       ORDER BY created_at ASC
@@ -206,6 +207,7 @@ export default async function quoteRoutes(app) {
           boundaryEdges: null,
           nonManifoldEdges: null,
           volumeMm3: null,
+          surfaceAreaMm2: null,
         });
       }
     } catch (err) {
@@ -259,8 +261,8 @@ export default async function quoteRoutes(app) {
     `);
     const insertFile = db.prepare(`
       INSERT INTO quote_files (id, quote_id, filename, size_bytes, triangle_count, file_path, thumb_path,
-                               is_watertight, boundary_edges, non_manifold_edges, volume_mm3, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                               is_watertight, boundary_edges, non_manifold_edges, volume_mm3, surface_area_mm2, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     let quotaExceeded = false;
@@ -278,6 +280,7 @@ export default async function quoteRoutes(app) {
           f.boundaryEdges,
           f.nonManifoldEdges,
           f.volumeMm3,
+          f.surfaceAreaMm2,
           now,
         );
       }
@@ -407,6 +410,7 @@ function fileView(f) {
     boundaryEdges: f.boundaryEdges ?? null,
     nonManifoldEdges: f.nonManifoldEdges ?? null,
     volumeMm3: f.volumeMm3 ?? null,
+    surfaceAreaMm2: f.surfaceAreaMm2 ?? null,
   };
 }
 
@@ -419,6 +423,7 @@ function attachFileMeta(acceptedFiles, rawValue) {
     if (Number.isFinite(data.boundaryEdges)) target.boundaryEdges = Math.max(0, Math.trunc(data.boundaryEdges));
     if (Number.isFinite(data.nonManifoldEdges)) target.nonManifoldEdges = Math.max(0, Math.trunc(data.nonManifoldEdges));
     if (Number.isFinite(data.volume) && data.volume >= 0) target.volumeMm3 = data.volume;
+    if (Number.isFinite(data.surfaceArea) && data.surfaceArea >= 0) target.surfaceAreaMm2 = data.surfaceArea;
   } catch { /* ignore malformed metadata */ }
 }
 

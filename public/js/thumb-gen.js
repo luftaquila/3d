@@ -114,5 +114,6 @@ export async function generateThumbnail(arrayBuffer, size = 512) {
     nonManifoldEdges: mesh.nonManifoldEdges,
     degenerateTriangles: mesh.degenerateTriangles,
     volume: mesh.volume,
+    surfaceArea: mesh.surfaceArea,
   };
 }
