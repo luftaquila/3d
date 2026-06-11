@@ -324,6 +324,7 @@ async function renderQuotesAdmin() {
     api('/api/admin/settings'),
   ]);
   smsTemplate = settings.sms_template || DEFAULT_SMS_TEMPLATE;
+  estPricePerM = Number(settings.est_price_per_m) || 500;
   const fieldMap = new Map(fields.map((f) => [f.id, f]));
 
   const users = allUsers.sort((a, b) => a.email.localeCompare(b.email));
@@ -416,7 +417,7 @@ function renderQuoteCalc(q) {
       <div class="quote-calc-grid">
         <label>필라멘트 (m)<input type="number" step="0.01" min="0" data-calc="filamentM" value="${numVal(q.filamentM)}"></label>
         <label>비용 (원)<input type="number" step="1" min="0" data-calc="cost" value="${numVal(q.cost)}"></label>
-        <label>할인 (%)<input type="number" step="1" min="0" max="100" data-calc="discount" value="${numVal(q.discount)}"></label>
+        <label>할인 (%)<input type="number" step="1" min="0" max="100" data-calc="discount" value="${q.discount ?? 0}"></label>
         <label>최종 비용 (원)<input type="number" step="1" min="0" data-calc="finalCost" value="${numVal(q.finalCost)}"></label>
       </div>
       <label class="quote-calc-comment">코멘트<textarea data-calc="comment" rows="2">${escapeHtml(q.comment ?? '')}</textarea></label>
@@ -425,10 +426,7 @@ function renderQuoteCalc(q) {
         <button class="btn calc-save" data-qid="${q.id}" style="padding:4px 12px;font-size:12px;">견적 저장</button>
       </div>
       <div class="quote-sms">
-        <div class="row" style="justify-content:space-between;align-items:center;gap:8px;">
-          <strong class="small">SMS 발송</strong>
-          <button class="btn ghost sms-fill" data-qid="${q.id}" style="padding:2px 10px;font-size:11px;">견적 내용 불러오기</button>
-        </div>
+        <strong class="small">SMS 발송</strong>
         <textarea class="sms-text" data-qid="${q.id}" rows="5" placeholder="고객에게 보낼 문자 내용"></textarea>
         <div class="row" style="justify-content:space-between;align-items:center;gap:8px;">
           <span class="muted small sms-count" data-qid="${q.id}"></span>
@@ -567,6 +565,7 @@ function hasNum(v) {
 // only in the DB setting, never in code.
 const DEFAULT_SMS_TEMPLATE = '견적: {amount}원\n상세: {link}';
 let smsTemplate = DEFAULT_SMS_TEMPLATE;
+let estPricePerM = 500; // filament price per meter; loaded from settings
 
 function composeSms(d) {
   const amount = hasNum(d.finalCost) ? Number(d.finalCost) : (hasNum(d.cost) ? Number(d.cost) : null);
@@ -595,28 +594,43 @@ function wireQuoteCalc(q) {
   if (!calcEl) return;
 
   const smsText = calcEl.querySelector('.sms-text');
-  // Prefill SMS body from the stored quote, then keep the byte counter live.
-  smsText.value = composeSms({
-    name: q.name,
-    filamentG: q.filamentG, filamentM: q.filamentM,
-    cost: q.cost, discount: q.discount, finalCost: q.finalCost,
-    comment: q.comment,
-  });
-  updateSmsCount(calcEl);
-  smsText.addEventListener('input', () => updateSmsCount(calcEl));
-
-  // Auto-suggest final cost = cost − discount as the admin types (still editable).
+  const mEl = calcEl.querySelector('[data-calc="filamentM"]');
   const costEl = calcEl.querySelector('[data-calc="cost"]');
   const discountEl = calcEl.querySelector('[data-calc="discount"]');
   const finalEl = calcEl.querySelector('[data-calc="finalCost"]');
-  const syncFinal = () => {
-    if (!hasNum(costEl.value)) return;
-    const pct = hasNum(discountEl.value) ? Number(discountEl.value) : 0;
-    const final = Math.max(0, Math.round(Number(costEl.value) * (1 - pct / 100)));
-    finalEl.value = String(final);
-  };
-  costEl.addEventListener('input', syncFinal);
-  discountEl.addEventListener('input', syncFinal);
+  const floor100 = (n) => Math.max(0, Math.floor(n / 100) * 100);
+
+  // Pre-rounding cost basis: filament length × rate, else the typed cost.
+  const rawCost = () => (hasNum(mEl.value) ? Number(mEl.value) * estPricePerM
+    : (hasNum(costEl.value) ? Number(costEl.value) : null));
+
+  // SMS body always reflects the current calc values (live, no fill button).
+  function refreshSms() {
+    smsText.value = composeSms({ name: q.name, ...readCalcInputs(calcEl) });
+    updateSmsCount(calcEl);
+  }
+  // Final = (pre-round cost × (1 − discount%)) truncated to 100원.
+  function recalcFinal() {
+    const raw = rawCost();
+    if (raw != null) {
+      const pct = hasNum(discountEl.value) ? Number(discountEl.value) : 0;
+      finalEl.value = String(floor100(raw * (1 - pct / 100)));
+    }
+    refreshSms();
+  }
+  // Filament m drives cost (× rate, 100원 절사) then final.
+  function recalcFromM() {
+    if (hasNum(mEl.value)) costEl.value = String(floor100(Number(mEl.value) * estPricePerM));
+    recalcFinal();
+  }
+
+  mEl.addEventListener('input', recalcFromM);
+  costEl.addEventListener('input', recalcFinal);
+  discountEl.addEventListener('input', recalcFinal);
+  finalEl.addEventListener('input', refreshSms);
+  smsText.addEventListener('input', () => updateSmsCount(calcEl));
+
+  refreshSms(); // initial SMS body from rendered values
 
   calcEl.querySelector('.calc-estimate')?.addEventListener('click', async (e) => {
     const totalVolume = q.files.reduce((acc, f) => acc + (Number(f.volumeMm3) || 0), 0);
@@ -627,7 +641,8 @@ function wireQuoteCalc(q) {
     try {
       const cfg = await api('/api/estimate-config');
       const est = estimateFilament(totalVolume, totalSurface, cfg);
-      calcEl.querySelector('[data-calc="filamentM"]').value = est.meters.toFixed(2);
+      mEl.value = est.meters.toFixed(2);
+      recalcFromM();
       toast('추정값을 채웠습니다 (표면적 기반, 수정 가능).', 'info');
     } catch (err) {
       toast(`추정 실패: ${err.message}`, 'error');
@@ -647,12 +662,6 @@ function wireQuoteCalc(q) {
     } finally {
       btn.disabled = false;
     }
-  });
-
-  calcEl.querySelector('.sms-fill')?.addEventListener('click', () => {
-    const v = readCalcInputs(calcEl);
-    smsText.value = composeSms({ name: q.name, ...v });
-    updateSmsCount(calcEl);
   });
 
   calcEl.querySelector('.sms-send')?.addEventListener('click', async (e) => {
