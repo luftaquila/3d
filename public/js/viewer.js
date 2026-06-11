@@ -26,10 +26,6 @@ function formatCm3(mm3) {
   if (cm3 < 100) return cm3.toFixed(1);
   return Math.round(cm3).toLocaleString();
 }
-function formatGrams(g) {
-  if (g < 10) return g.toFixed(1);
-  return Math.round(g).toLocaleString();
-}
 
 async function parseWithWasm(buffer) {
   const mod = await loadStlWasm();
@@ -221,11 +217,10 @@ export async function mountViewer(container, items, options = {}) {
     statsParts.push(`<div class="legend-meta">${parsed.length} models · ${volPrefix}${formatCm3(totalVolume)} cm³ · ${totalTris.toLocaleString()} triangles</div>`);
   }
   const est = estimateFilament(totalVolume);
-  if (est.grams > 0) {
-    statsParts.push(`<div class="legend-meta">≈ ${formatGrams(est.grams)} g / ${est.meters.toFixed(2)} m 예상 (충전율 5%)</div>`);
+  if (est.meters > 0) {
     const cost = estimateCost(est.meters);
-    statsParts.push(`<div class="legend-cost">예상 비용 ≈ ${cost.toLocaleString('ko-KR')}원</div>`);
-    statsParts.push(`<div class="legend-note">예상 비용은 모델의 단순 부피로 산정한 예상치이며 실제와 크게 달라질 수 있습니다.</div>`);
+    statsParts.push(`<div class="legend-cost">≈ ${est.meters.toFixed(2)}m / ${cost.toLocaleString('ko-KR')}원 (추정)</div>`);
+    statsParts.push(`<div class="legend-note">예상 비용은 모델의 부피로 산정한 단순 예상치이며 실제와 크게 달라질 수 있습니다.</div>`);
   }
 
   let totalBoundary = 0;
