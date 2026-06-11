@@ -36,10 +36,11 @@ export function estimateFilament(volumeMm3, surfaceAreaMm2, opts = {}) {
   return { grams, meters, plasticMm3 };
 }
 
-// Estimated cost (KRW) from filament length in meters. Rounded to the won.
+// Estimated cost (KRW) from filament length in meters, truncated down to the
+// nearest 100원.
 export function estimateCost(meters, pricePerM) {
   const m = Number(meters);
   if (!Number.isFinite(m) || m <= 0) return 0;
   const rate = Number.isFinite(pricePerM) ? pricePerM : ESTIMATE_DEFAULTS.pricePerM;
-  return Math.round(m * rate);
+  return Math.floor((m * rate) / 100) * 100;
 }

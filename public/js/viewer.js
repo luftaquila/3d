@@ -231,7 +231,7 @@ export async function mountViewer(container, items, options = {}) {
   const est = estimateFilament(totalVolume, totalSurface, estCfg);
   if (est.meters > 0) {
     const cost = estimateCost(est.meters, estCfg.pricePerM);
-    statsParts.push(`<div class="legend-cost">≈ ${est.meters.toFixed(2)}m / ${cost.toLocaleString('ko-KR')}원 (추정)</div>`);
+    statsParts.push(`<div class="legend-cost">≈ ${cost.toLocaleString('ko-KR')}원 (추정)</div>`);
     statsParts.push(`<div class="legend-note">예상 비용은 모델의 부피로 산정한 단순 예상치이며 실제와 크게 달라질 수 있습니다.</div>`);
   }
 
