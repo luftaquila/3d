@@ -45,6 +45,7 @@ async function renderSettings() {
   const estWall = settings.est_wall_mm ?? '1.0';
   const estInfill = settings.est_infill_pct ?? '15';
   const estPrice = settings.est_price_per_m ?? '500';
+  const smsTpl = settings.sms_template ?? '';
   host.innerHTML = `
     <h2>설정</h2>
     <label style="display:flex;align-items:center;gap:8px;">
@@ -69,6 +70,15 @@ async function renderSettings() {
       </div>
       <div class="row" style="margin-top:10px;">
         <button class="btn" id="save-estimate">저장</button>
+      </div>
+    </div>
+
+    <div style="margin-top:24px;padding-top:20px;border-top:1px solid var(--border-light);">
+      <h3 style="margin:0 0 4px;">SMS 메시지 프리셋</h3>
+      <p class="muted small" style="margin:0 0 8px;">견적건의 "SMS 전송"에서 기본으로 채워질 문구입니다. 치환자: <code>{amount}</code> 최종 금액, <code>{name}</code> 고객명, <code>{link}</code> 내 견적 링크.</p>
+      <textarea id="sms-template" style="min-height:90px;font-family:var(--font-mono);font-size:13px;" placeholder="견적: {amount}원\n상세: {link}">${escapeHtml(smsTpl)}</textarea>
+      <div class="row" style="margin-top:10px;">
+        <button class="btn" id="save-sms-template">저장</button>
       </div>
     </div>
 
@@ -110,6 +120,15 @@ async function renderSettings() {
         },
       });
       toast('추정 파라미터 저장됨', 'success');
+    } catch (err) { toast(err.message, 'error'); }
+  });
+  document.getElementById('save-sms-template').addEventListener('click', async () => {
+    try {
+      await api('/api/admin/settings', {
+        method: 'PUT',
+        body: { sms_template: document.getElementById('sms-template').value },
+      });
+      toast('SMS 프리셋 저장됨', 'success');
     } catch (err) { toast(err.message, 'error'); }
   });
   document.getElementById('backfill-start').addEventListener('click', runBackfill);
@@ -299,10 +318,12 @@ function readFieldRow(row) {
 
 async function renderQuotesAdmin() {
   const host = document.getElementById('quotes-panel');
-  const [{ quotes, users: allUsers }, { fields }] = await Promise.all([
+  const [{ quotes, users: allUsers }, { fields }, { settings }] = await Promise.all([
     api('/api/admin/quotes'),
     api('/api/form-fields'),
+    api('/api/admin/settings'),
   ]);
+  smsTemplate = settings.sms_template || DEFAULT_SMS_TEMPLATE;
   const fieldMap = new Map(fields.map((f) => [f.id, f]));
 
   const users = allUsers.sort((a, b) => a.email.localeCompare(b.email));
@@ -393,10 +414,9 @@ function renderQuoteCalc(q) {
   return `
     <div class="quote-calc" data-qid="${q.id}">
       <div class="quote-calc-grid">
-        <label>필라멘트 (g)<input type="number" step="0.1" min="0" data-calc="filamentG" value="${numVal(q.filamentG)}"></label>
         <label>필라멘트 (m)<input type="number" step="0.01" min="0" data-calc="filamentM" value="${numVal(q.filamentM)}"></label>
         <label>비용 (원)<input type="number" step="1" min="0" data-calc="cost" value="${numVal(q.cost)}"></label>
-        <label>할인 (원)<input type="number" step="1" min="0" data-calc="discount" value="${numVal(q.discount)}"></label>
+        <label>할인 (%)<input type="number" step="1" min="0" max="100" data-calc="discount" value="${numVal(q.discount)}"></label>
         <label>최종 비용 (원)<input type="number" step="1" min="0" data-calc="finalCost" value="${numVal(q.finalCost)}"></label>
       </div>
       <label class="quote-calc-comment">코멘트<textarea data-calc="comment" rows="2">${escapeHtml(q.comment ?? '')}</textarea></label>
@@ -541,19 +561,19 @@ function hasNum(v) {
   return v !== '' && v !== null && v !== undefined && Number.isFinite(Number(v));
 }
 
-// Build the default SMS body from quote calc values; only includes set fields.
+// SMS body is built from an admin-editable template (stored in settings, loaded
+// in renderQuotesAdmin). Placeholders: {amount} final/cost in won, {name}, {link}.
+// The source default is intentionally generic — the real wording/account lives
+// only in the DB setting, never in code.
+const DEFAULT_SMS_TEMPLATE = '견적: {amount}원\n상세: {link}';
+let smsTemplate = DEFAULT_SMS_TEMPLATE;
+
 function composeSms(d) {
-  const lines = ['[3D 프린팅 견적]', `${(d.name || '고객')}님, 견적 안내드립니다.`];
-  const fparts = [];
-  if (hasNum(d.filamentG) && Number(d.filamentG) > 0) fparts.push(`${Number(d.filamentG)}g`);
-  if (hasNum(d.filamentM) && Number(d.filamentM) > 0) fparts.push(`${Number(d.filamentM)}m`);
-  if (fparts.length) lines.push(`- 필라멘트: ${fparts.join(' / ')}`);
-  if (hasNum(d.cost)) lines.push(`- 비용: ${fmtWon(d.cost)}원`);
-  if (hasNum(d.discount) && Number(d.discount) > 0) lines.push(`- 할인: ${fmtWon(d.discount)}원`);
-  if (hasNum(d.finalCost)) lines.push(`- 최종 금액: ${fmtWon(d.finalCost)}원`);
-  const comment = (d.comment ?? '').trim();
-  if (comment) lines.push(comment);
-  return lines.join('\n');
+  const amount = hasNum(d.finalCost) ? Number(d.finalCost) : (hasNum(d.cost) ? Number(d.cost) : null);
+  return (smsTemplate || DEFAULT_SMS_TEMPLATE)
+    .split('{amount}').join(amount != null ? fmtWon(amount) : '')
+    .split('{name}').join(d.name || '')
+    .split('{link}').join(`${location.origin}/my`);
 }
 
 function readCalcInputs(calcEl) {
@@ -591,7 +611,8 @@ function wireQuoteCalc(q) {
   const finalEl = calcEl.querySelector('[data-calc="finalCost"]');
   const syncFinal = () => {
     if (!hasNum(costEl.value)) return;
-    const final = Math.max(0, Math.round(Number(costEl.value) - (hasNum(discountEl.value) ? Number(discountEl.value) : 0)));
+    const pct = hasNum(discountEl.value) ? Number(discountEl.value) : 0;
+    const final = Math.max(0, Math.round(Number(costEl.value) * (1 - pct / 100)));
     finalEl.value = String(final);
   };
   costEl.addEventListener('input', syncFinal);
@@ -606,7 +627,6 @@ function wireQuoteCalc(q) {
     try {
       const cfg = await api('/api/estimate-config');
       const est = estimateFilament(totalVolume, totalSurface, cfg);
-      calcEl.querySelector('[data-calc="filamentG"]').value = est.grams.toFixed(est.grams < 10 ? 1 : 0);
       calcEl.querySelector('[data-calc="filamentM"]').value = est.meters.toFixed(2);
       toast('추정값을 채웠습니다 (표면적 기반, 수정 가능).', 'info');
     } catch (err) {

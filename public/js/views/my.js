@@ -126,7 +126,7 @@ function renderQuoteSummary(q) {
   if (has(q.filamentM)) fparts.push(`${q.filamentM}m`);
   if (fparts.length) rows.push(['필라멘트', fparts.join(' / ')]);
   if (has(q.cost)) rows.push(['비용', `${Number(q.cost).toLocaleString('ko-KR')}원`]);
-  if (has(q.discount)) rows.push(['할인', `${Number(q.discount).toLocaleString('ko-KR')}원`]);
+  if (has(q.discount)) rows.push(['할인', `${Number(q.discount).toLocaleString('ko-KR')}%`]);
   if (has(q.finalCost)) rows.push(['최종 비용', `${Number(q.finalCost).toLocaleString('ko-KR')}원`]);
   const comment = (q.comment ?? '').trim();
   if (!rows.length && !comment) return '';

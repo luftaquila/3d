@@ -151,6 +151,9 @@ export default async function adminRoutes(app) {
     if ([filamentG, filamentM, cost, discount, finalCost].some((r) => !r.ok)) {
       return reply.code(400).send({ error: '숫자 값이 올바르지 않습니다.' });
     }
+    if (discount.value !== null && discount.value > 100) {
+      return reply.code(400).send({ error: '할인율은 0~100% 범위여야 합니다.' });
+    }
     let comment = body.comment;
     if (comment === undefined || comment === null || comment === '') comment = null;
     else {
@@ -452,7 +455,7 @@ export default async function adminRoutes(app) {
   }, async (req, reply) => {
     const db = openDatabase();
     const body = req.body ?? {};
-    const allowed = new Set(['camera_enabled', 'home_html', 'est_wall_mm', 'est_infill_pct', 'est_price_per_m']);
+    const allowed = new Set(['camera_enabled', 'home_html', 'est_wall_mm', 'est_infill_pct', 'est_price_per_m', 'sms_template']);
     const numericKeys = new Set(['est_wall_mm', 'est_infill_pct', 'est_price_per_m']);
     for (const [k, v] of Object.entries(body)) {
       if (numericKeys.has(k)) {
