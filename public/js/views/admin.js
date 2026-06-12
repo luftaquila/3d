@@ -246,7 +246,7 @@ async function loadSmsLog() {
       ${entries.length === 0 ? '<p class="muted small">전송 내역이 없습니다.</p>' : `
         <div style="overflow-x:auto;">
           <table class="admin-table smslog-table">
-            <thead><tr><th>시각</th><th>종류</th><th>유형</th><th>결과</th><th>접수자</th><th>번호</th><th>견적#</th><th>본문</th></tr></thead>
+            <thead><tr><th>시각</th><th>유형</th><th>결과</th><th>접수자</th><th>번호</th><th>견적#</th><th>본문</th></tr></thead>
             <tbody>${entries.map(renderSmsLogRow).join('')}</tbody>
           </table>
         </div>`}
@@ -261,7 +261,6 @@ function renderSmsLogRow(e) {
   return `
     <tr>
       <td style="white-space:nowrap;">${fmtDate(e.createdAt)}</td>
-      <td>${escapeHtml(e.kind || '')}</td>
       <td>${escapeHtml(e.msgType || '')}</td>
       <td>${e.ok ? '<span class="success">성공</span>' : '<span class="error">실패</span>'}</td>
       <td>${escapeHtml(e.name || '')}</td>
