@@ -84,7 +84,16 @@ async function renderSettings() {
         <div class="settings-section">
           <h3>SMS 메시지 프리셋</h3>
           <p class="muted small" style="margin:0 0 10px;">치환자: <code>{amount}</code> 최종 금액, <code>{name}</code> 고객명, <code>{link}</code> 내 견적 링크.</p>
-          ${SMS_TEMPLATES.map((t) => renderTemplateEditor(t, tplVals(t), { withEnable: t.id === 'submit', enabled: submitOn })).join('')}
+          ${FIXED_TEMPLATES.map((t) => renderTemplateEditor(t, tplVals(t), { withEnable: t.id === 'submit', enabled: submitOn })).join('')}
+          <div style="margin-top:18px;">
+            <strong class="small">출력 완료 메시지</strong>
+            <p class="muted small" style="margin:4px 0 8px;">필요한 만큼 추가/삭제하세요. 제목은 발송 드롭다운에 표시됩니다.</p>
+            <div id="done-list"></div>
+            <div class="row" style="gap:8px;margin-top:10px;">
+              <button class="btn secondary" id="done-add" style="padding:4px 12px;font-size:12px;">+ 템플릿 추가</button>
+              <button class="btn" id="done-save" style="padding:4px 12px;font-size:12px;">출력 완료 저장</button>
+            </div>
+          </div>
         </div>
 
         <div class="settings-section">
@@ -143,7 +152,7 @@ async function renderSettings() {
 
   // SMS 템플릿 에디터들 (제목 + 본문 + 카운터 + 저장; 견적 접수는 on/off 포함)
   host.querySelectorAll('.sms-tpl').forEach((el) => {
-    const t = SMS_TEMPLATES.find((x) => x.id === el.dataset.tpl);
+    const t = FIXED_TEMPLATES.find((x) => x.id === el.dataset.tpl);
     if (!t) return;
     const contentEl = el.querySelector('.tpl-content');
     const countEl = el.querySelector('.tpl-count');
@@ -161,8 +170,54 @@ async function renderSettings() {
     });
   });
 
+  // 출력 완료 메시지: free-form add/delete list, saved as JSON to sms_done_list.
+  let doneItems = parseDoneList(settings);
+  const doneListEl = document.getElementById('done-list');
+  function renderDoneRows() {
+    doneListEl.innerHTML = doneItems.length
+      ? doneItems.map(renderDoneRow).join('')
+      : '<p class="muted small">템플릿이 없습니다. "+ 템플릿 추가"로 만드세요.</p>';
+    [...doneListEl.querySelectorAll('.done-row')].forEach((row, idx) => {
+      const contentEl = row.querySelector('.done-content');
+      const titleEl = row.querySelector('.done-title');
+      const countEl = row.querySelector('.done-count');
+      const upd = () => { countEl.textContent = smsCountLabel(contentEl.value); };
+      upd();
+      contentEl.addEventListener('input', () => { doneItems[idx].content = contentEl.value; upd(); });
+      titleEl.addEventListener('input', () => { doneItems[idx].title = titleEl.value; });
+      row.querySelector('.done-del').addEventListener('click', () => { doneItems.splice(idx, 1); renderDoneRows(); });
+    });
+  }
+  renderDoneRows();
+  document.getElementById('done-add').addEventListener('click', () => {
+    doneItems.push({ title: '', content: '' });
+    renderDoneRows();
+  });
+  document.getElementById('done-save').addEventListener('click', async () => {
+    const list = doneItems.filter((it) => (it.content || '').trim());
+    try {
+      await api('/api/admin/settings', { method: 'PUT', body: { sms_done_list: JSON.stringify(list) } });
+      doneItems = list;
+      renderDoneRows();
+      toast('출력 완료 메시지 저장됨', 'success');
+    } catch (err) { toast(err.message, 'error'); }
+  });
+
   document.getElementById('backfill-start').addEventListener('click', runBackfill);
   renderFieldsAdmin();
+}
+
+function renderDoneRow(item) {
+  return `
+    <div class="done-row">
+      <input type="text" class="done-title" placeholder="제목 (예: 일반 / 지연)" value="${escapeAttr(item.title)}" style="width:100%;">
+      <textarea class="done-content" rows="3" style="font-family:var(--font-mono);font-size:13px;margin-top:4px;">${escapeHtml(item.content)}</textarea>
+      <div class="row" style="justify-content:space-between;align-items:center;gap:8px;margin-top:4px;">
+        <span class="muted small done-count"></span>
+        <button class="btn danger done-del" style="padding:2px 10px;font-size:11px;">삭제</button>
+      </div>
+    </div>
+  `;
 }
 
 async function renderSmsLog() {
@@ -699,26 +754,44 @@ function hasNum(v) {
 // defaults are intentionally generic — real wording/accounts live only in the DB.
 // Placeholders (applied to both subject and content): {amount} final/cost in won,
 // {name} customer, {link} the /my page.
-const SMS_TEMPLATES = [
-  { id: 'submit', label: '견적 접수', contentKey: 'sms_submit_template', subjectKey: 'sms_submit_subject', enableKey: 'sms_submit_enabled' },
-  { id: 'quote', label: '견적 안내', contentKey: 'sms_template', subjectKey: 'sms_template_subject' },
-  { id: 'done1', label: '출력 완료 1', contentKey: 'sms_done1_template', subjectKey: 'sms_done1_subject' },
-  { id: 'done2', label: '출력 완료 2', contentKey: 'sms_done2_template', subjectKey: 'sms_done2_subject' },
-  { id: 'done3', label: '출력 완료 3', contentKey: 'sms_done3_template', subjectKey: 'sms_done3_subject' },
+const FIXED_TEMPLATES = [
+  { id: 'submit', label: '견적 접수', contentKey: 'sms_submit_template', enableKey: 'sms_submit_enabled' },
+  { id: 'quote', label: '견적 안내', contentKey: 'sms_template' },
 ];
 const DEFAULT_QUOTE_TEMPLATE = '견적: {amount}원\n상세: {link}';
-let smsTemplates = {}; // id -> { label, content }; loaded in renderQuotesAdmin
+let smsTemplates = {};        // id -> { label, content }
+let smsTemplateOrder = [];    // ordered ids for the send dropdown
 let smsSubmitEnabled = false; // when auto-send is on, hide 견적 접수 from the manual dropdown
-let estPricePerM = 500; // filament price per meter; loaded from settings
+let estPricePerM = 500;       // filament price per meter; loaded from settings
+
+// 출력 완료 templates are a free-form list (title + content) stored as JSON in
+// settings.sms_done_list. Falls back to migrating the legacy fixed slots.
+function parseDoneList(settings) {
+  try {
+    const arr = JSON.parse(settings.sms_done_list || '[]');
+    if (Array.isArray(arr)) return arr.map((x) => ({ title: String(x?.title || ''), content: String(x?.content || '') }));
+  } catch { /* fall through to legacy migration */ }
+  const legacy = [];
+  for (let i = 1; i <= 3; i++) {
+    const c = settings[`sms_done${i}_template`];
+    if (c && c.trim()) legacy.push({ title: `출력 완료 ${i}`, content: c });
+  }
+  return legacy;
+}
 
 function loadSmsTemplates(settings) {
   smsTemplates = {};
-  for (const t of SMS_TEMPLATES) {
-    smsTemplates[t.id] = {
-      label: t.label,
-      content: settings[t.contentKey] || (t.id === 'quote' ? DEFAULT_QUOTE_TEMPLATE : ''),
-    };
+  smsTemplateOrder = [];
+  for (const t of FIXED_TEMPLATES) {
+    const content = settings[t.contentKey] || (t.id === 'quote' ? DEFAULT_QUOTE_TEMPLATE : '');
+    smsTemplates[t.id] = { label: t.label, content };
+    smsTemplateOrder.push(t.id);
   }
+  parseDoneList(settings).forEach((d, i) => {
+    const id = `done${i}`;
+    smsTemplates[id] = { label: d.title || `출력 완료 ${i + 1}`, content: d.content };
+    smsTemplateOrder.push(id);
+  });
 }
 
 function substitutePlaceholders(text, d) {
@@ -760,12 +833,12 @@ function wireQuoteCalc(q) {
 
   // Template dropdown: templates with non-empty content. 견적 접수 is hidden while
   // auto-send is on. Default 견적 안내.
-  const available = SMS_TEMPLATES.filter((t) => {
-    if (t.id === 'submit' && smsSubmitEnabled) return false;
-    return (smsTemplates[t.id]?.content || '').trim();
+  const available = smsTemplateOrder.filter((id) => {
+    if (id === 'submit' && smsSubmitEnabled) return false;
+    return (smsTemplates[id]?.content || '').trim();
   });
-  selectEl.innerHTML = available.map((t) => `<option value="${t.id}">${escapeHtml(smsTemplates[t.id].label)}</option>`).join('');
-  let selectedId = (available.find((t) => t.id === 'quote') || available[0])?.id || null;
+  selectEl.innerHTML = available.map((id) => `<option value="${id}">${escapeHtml(smsTemplates[id].label)}</option>`).join('');
+  let selectedId = available.includes('quote') ? 'quote' : (available[0] || null);
   if (selectedId) selectEl.value = selectedId;
   if (available.length === 0) selectEl.style.display = 'none';
 

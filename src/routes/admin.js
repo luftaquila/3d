@@ -502,14 +502,25 @@ export default async function adminRoutes(app) {
     const body = req.body ?? {};
     const allowed = new Set([
       'camera_enabled', 'home_html', 'est_wall_mm', 'est_infill_pct', 'est_price_per_m',
-      'sms_template', 'sms_template_subject', 'sms_submit_enabled', 'sms_submit_template', 'sms_submit_subject',
-      'sms_done1_template', 'sms_done1_subject', 'sms_done2_template', 'sms_done2_subject', 'sms_done3_template', 'sms_done3_subject',
+      'sms_template', 'sms_submit_enabled', 'sms_submit_template', 'sms_done_list',
     ]);
     const numericKeys = new Set(['est_wall_mm', 'est_infill_pct', 'est_price_per_m']);
     for (const [k, v] of Object.entries(body)) {
       if (numericKeys.has(k)) {
         const n = Number(v);
         if (!Number.isFinite(n) || n < 0) return reply.code(400).send({ error: `잘못된 값: ${k}` });
+      }
+    }
+    if (body.sms_done_list !== undefined) {
+      try {
+        const arr = JSON.parse(body.sms_done_list);
+        if (!Array.isArray(arr) || arr.length > 20) throw new Error('bad');
+        for (const it of arr) {
+          if (!it || typeof it !== 'object') throw new Error('bad');
+          if (String(it.title ?? '').length > 100 || String(it.content ?? '').length > 2000) throw new Error('bad');
+        }
+      } catch {
+        return reply.code(400).send({ error: '출력 완료 템플릿 형식이 올바르지 않습니다.' });
       }
     }
     const upsert = db.prepare(`
