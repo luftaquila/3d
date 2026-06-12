@@ -67,8 +67,10 @@ function startPrintStatusPolling() {
 async function pollPrintStatus() {
   const box = document.getElementById('camera-status');
   if (!box) { stopPrintStatusPolling(); return; }
-  // Skip work while hidden or when the camera card itself is collapsed.
-  if (document.hidden || box.closest('.hidden')) return;
+  // Skip work while the tab is hidden or the camera card itself is off. (Don't
+  // use box.closest('.hidden') — box starts with the .hidden class, so it would
+  // self-match and never fetch.)
+  if (document.hidden || document.getElementById('camera-panel')?.classList.contains('hidden')) return;
   try {
     const s = await api('/api/camera/print-status');
     const el = document.getElementById('camera-status');
