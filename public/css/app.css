@@ -618,6 +618,9 @@ input:focus, textarea:focus, select:focus {
   object-fit: contain;
 }
 
+/* Equal, roomy header→media gap on the 수령 위치 + 카메라 cards (vs the default 12px). */
+.media-card h2 { margin-bottom: 20px; }
+
 .camera-status {
   margin-top: 10px;
   text-align: center;

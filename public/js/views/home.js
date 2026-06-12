@@ -205,7 +205,7 @@ export async function renderHome(host, state, navigate) {
 
     ${renderPlaceCard(place)}
 
-    <section id="camera-panel" class="panel camera-card ${cam.enabled ? '' : 'hidden'}">
+    <section id="camera-panel" class="panel camera-card media-card ${cam.enabled ? '' : 'hidden'}">
       <h2>📹 실시간 프린터 카메라</h2>
       ${cam.enabled && cam.streamUrl ? `<img id="camera-stream" src="${cam.streamUrl}" alt="실시간 프린터 카메라">` : ''}
       <div id="camera-status" class="camera-status hidden" aria-live="polite"></div>
@@ -246,7 +246,7 @@ function renderPlaceCard(place) {
   const kakaoDir = `https://map.kakao.com/link/to/${nameEnc},${place.lat},${place.lng}`;
   const tmapDir = `tmap://route?goalname=${nameEnc}&goalx=${place.lng}&goaly=${place.lat}`;
   return `
-    <section class="panel">
+    <section class="panel media-card">
       <h2>📍 수령 위치</h2>
       <div class="se-map-card">
         <div id="naver-map" class="se-map-image"></div>
