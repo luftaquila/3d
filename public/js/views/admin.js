@@ -471,7 +471,11 @@ function renderAdminQuote(q, fieldMap) {
       <div class="quote-row-header">
         <div style="flex:1;min-width:0;">
           <div class="quote-date" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
-            <span>${fmtDate(q.createdAt)} <span class="quote-id">#${q.id.slice(-8)}</span>${tags}</span>
+            <span style="display:inline-flex;align-items:center;flex-wrap:wrap;gap:8px;">
+              <span>${fmtDate(q.createdAt)}</span>
+              <span class="quote-id">#${q.id.slice(-8)}</span>
+              ${tags}
+            </span>
             <button class="btn danger hard-del-quote" data-qid="${q.id}" style="padding:4px 12px;font-size:12px;">완전 삭제</button>
           </div>
           <div class="quote-meta">
@@ -486,9 +490,11 @@ function renderAdminQuote(q, fieldMap) {
       <div class="file-grid" id="files-${q.id}">
         ${q.files.map((f, i) => renderAdminFileCard(q.id, f, i >= 4 && q.files.length >= 5)).join('')}
       </div>
-      ${q.files.length >= 5 ? `<button class="btn ghost show-more-admin" data-qid="${q.id}" style="margin-top:8px;font-size:12px;padding:4px 12px;">+${q.files.length - 4}개 더보기</button>` : ''}
+      ${(q.files.length >= 5 || q.files.length >= 2) ? `<div class="row" style="gap:6px;margin-top:8px;align-items:center;flex-wrap:wrap;">
+        ${q.files.length >= 5 ? `<button class="btn ghost show-more-admin" data-qid="${q.id}" style="font-size:12px;padding:4px 12px;">+${q.files.length - 4}개 더보기</button>` : ''}
+        ${q.files.length >= 2 ? `<button class="btn accent dl-all-admin" data-qid="${q.id}" style="padding:4px 12px;font-size:12px;">전체 다운로드</button>` : ''}
+      </div>` : ''}
       ${renderQuoteCalc(q)}
-      ${q.files.length >= 2 ? `<div class="row" style="justify-content:flex-end;gap:6px;margin-top:10px;"><button class="btn accent dl-all-admin" data-qid="${q.id}" style="padding:4px 12px;font-size:12px;">전체 다운로드</button></div>` : ''}
     </div>
   `;
 }
