@@ -501,7 +501,7 @@ export default async function adminRoutes(app) {
     const db = openDatabase();
     const body = req.body ?? {};
     const allowed = new Set([
-      'camera_enabled', 'home_html', 'est_wall_mm', 'est_infill_pct', 'est_price_per_m',
+      'camera_enabled', 'camera_status_enabled', 'home_html', 'est_wall_mm', 'est_infill_pct', 'est_price_per_m',
       'sms_template', 'sms_submit_enabled', 'sms_submit_template', 'sms_done_list',
     ]);
     const numericKeys = new Set(['est_wall_mm', 'est_infill_pct', 'est_price_per_m']);

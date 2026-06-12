@@ -39,6 +39,9 @@ export const config = {
     url: optional('HA_URL', ''),
     token: optional('HA_TOKEN', ''),
     cameraEntity: optional('HA_CAMERA_ENTITY', ''),
+    // Bambu device slug for the print-status sensors (sensor.<prefix>_current_layer
+    // etc.). Optional — defaults to deriving from cameraEntity (camera.<prefix>_camera).
+    printerPrefix: optional('HA_PRINTER_PREFIX', ''),
   },
   naverPlace: {
     lat: optional('NAVER_PLACE_LAT', ''),

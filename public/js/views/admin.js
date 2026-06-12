@@ -58,6 +58,7 @@ async function renderSettings() {
   const host = document.getElementById('settings-panel');
   const { settings } = await api('/api/admin/settings');
   const cameraOn = settings.camera_enabled === '1';
+  const camStatusOn = settings.camera_status_enabled === '1';
   const homeHtml = settings.home_html ?? '';
   const estWall = settings.est_wall_mm ?? '1.0';
   const estInfill = settings.est_infill_pct ?? '15';
@@ -74,6 +75,10 @@ async function renderSettings() {
         <label style="display:flex;align-items:center;gap:8px;">
           <input type="checkbox" id="cam-toggle" ${cameraOn ? 'checked' : ''} style="width:auto;">
           카메라 스트림을 메인 페이지에 표시
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+          <input type="checkbox" id="cam-status-toggle" ${camStatusOn ? 'checked' : ''} style="width:auto;">
+          카메라 아래에 프린터 상태(진행률·레이어·남은 시간) 표시
         </label>
 
         <label for="home-html" style="margin-top:20px;">메인 페이지 공지 (HTML)</label>
@@ -127,6 +132,12 @@ async function renderSettings() {
   document.getElementById('cam-toggle').addEventListener('change', async (e) => {
     try {
       await api('/api/admin/settings', { method: 'PUT', body: { camera_enabled: e.target.checked ? '1' : '0' } });
+      toast('설정 저장됨', 'success');
+    } catch (err) { toast(err.message, 'error'); }
+  });
+  document.getElementById('cam-status-toggle').addEventListener('change', async (e) => {
+    try {
+      await api('/api/admin/settings', { method: 'PUT', body: { camera_status_enabled: e.target.checked ? '1' : '0' } });
       toast('설정 저장됨', 'success');
     } catch (err) { toast(err.message, 'error'); }
   });

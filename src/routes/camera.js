@@ -32,6 +32,76 @@ function haConfigured() {
   return Boolean(config.homeassistant.url && config.homeassistant.token && config.homeassistant.cameraEntity);
 }
 
+function printStatusEnabled() {
+  const row = openDatabase().prepare('SELECT value FROM settings WHERE key = ?').get('camera_status_enabled');
+  return row?.value === '1';
+}
+
+// Bambu print-status sensors share a device prefix with the camera entity
+// (camera.<prefix>_camera). Allow an explicit override via HA_PRINTER_PREFIX.
+function printerPrefix() {
+  if (config.homeassistant.printerPrefix) return config.homeassistant.printerPrefix;
+  const m = /^camera\.(.+?)_camera$/.exec(config.homeassistant.cameraEntity || '');
+  return m ? m[1] : null;
+}
+
+async function haState(entityId) {
+  try {
+    const res = await request(`${config.homeassistant.url}/api/states/${encodeURIComponent(entityId)}`, {
+      headers: { Authorization: `Bearer ${config.homeassistant.token}` },
+      headersTimeout: 5000,
+      bodyTimeout: 5000,
+    });
+    if (res.statusCode !== 200) { try { await res.body.dump(); } catch { /* ignore */ } return null; }
+    return await res.body.json();
+  } catch { return null; }
+}
+
+function stateNum(s) {
+  const v = s?.state;
+  if (v == null || v === 'unknown' || v === 'unavailable' || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+function stateStr(s) {
+  const v = s?.state;
+  if (v == null || v === 'unknown' || v === 'unavailable' || v === '') return null;
+  return String(v);
+}
+
+// Coalesce many viewers' polls into one HA read window. These sensors are fed
+// by HA's MQTT cache, not a fresh printer poll, so this adds no printer load.
+const STATUS_CACHE_MS = 5000;
+let statusCache = { at: 0, data: null };
+
+async function fetchPrintStatus(log) {
+  const now = Date.now();
+  if (statusCache.data && now - statusCache.at < STATUS_CACHE_MS) return statusCache.data;
+  const prefix = printerPrefix();
+  if (!prefix) return { available: false };
+  const names = ['print_status', 'current_stage', 'print_progress', 'current_layer', 'total_layer_count', 'remaining_time'];
+  let states;
+  try {
+    states = await Promise.all(names.map((n) => haState(`sensor.${prefix}_${n}`)));
+  } catch (err) {
+    log?.warn?.({ err: err?.message }, 'HA print-status fetch failed');
+    return { available: false };
+  }
+  const [pStatus, pStage, pProg, pCur, pTot, pRem] = states;
+  const rem = stateNum(pRem); // unit: hours (fractional)
+  const data = {
+    available: stateStr(pStatus) != null,
+    state: stateStr(pStatus),
+    stage: stateStr(pStage),
+    progress: stateNum(pProg),
+    currentLayer: stateNum(pCur),
+    totalLayers: stateNum(pTot),
+    remainingMin: rem == null ? null : Math.round(rem * 60),
+  };
+  statusCache = { at: now, data };
+  return data;
+}
+
 function signToken(exp, ip) {
   return crypto.createHmac('sha256', config.cameraStreamKey)
     .update(`${exp}:${ip}`).digest('hex').slice(0, 32);
@@ -276,6 +346,16 @@ export default async function cameraRoutes(app) {
     } finally {
       releaseIpSlot(req.ip);
     }
+  });
+
+  app.get('/api/camera/print-status', {
+    config: { rateLimit: { max: 120, timeWindow: '1 minute' } },
+  }, async (req, reply) => {
+    reply.header('cache-control', 'no-store');
+    if (!printStatusEnabled()) return { enabled: false };
+    if (!haConfigured()) return { enabled: false };
+    const data = await fetchPrintStatus(req.log);
+    return { enabled: true, ...data };
   });
 
   app.get('/camera/snapshot', {

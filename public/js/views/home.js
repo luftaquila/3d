@@ -40,13 +40,79 @@ function wireCameraStream(img) {
 
 document.addEventListener('visibilitychange', () => {
   const img = document.getElementById('camera-stream');
-  if (!img) return;
-  if (document.hidden) {
-    img.removeAttribute('src');
-    return;
+  if (img) {
+    if (document.hidden) img.removeAttribute('src');
+    else refreshCameraStream(img);
   }
-  refreshCameraStream(img);
+  if (!document.hidden) pollPrintStatus();
 });
+
+// Live printer status (current/total layer, progress, time remaining) shown
+// below the camera. Polls HA via the backend; gated by the admin toggle. HA
+// serves these from its MQTT cache, so polling adds no printer load.
+const PRINT_STATUS_INTERVAL_MS = 15000;
+let printStatusTimer = null;
+
+function stopPrintStatusPolling() {
+  if (printStatusTimer) { clearInterval(printStatusTimer); printStatusTimer = null; }
+}
+
+function startPrintStatusPolling() {
+  stopPrintStatusPolling();
+  if (!document.getElementById('camera-status')) return;
+  pollPrintStatus();
+  printStatusTimer = setInterval(pollPrintStatus, PRINT_STATUS_INTERVAL_MS);
+}
+
+async function pollPrintStatus() {
+  const box = document.getElementById('camera-status');
+  if (!box) { stopPrintStatusPolling(); return; }
+  // Skip work while hidden or when the camera card itself is collapsed.
+  if (document.hidden || box.closest('.hidden')) return;
+  try {
+    const s = await api('/api/camera/print-status');
+    const el = document.getElementById('camera-status');
+    if (!el) return;
+    if (!s.enabled || !s.available || !s.state) {
+      el.classList.add('hidden');
+      el.innerHTML = '';
+      return;
+    }
+    el.innerHTML = renderPrintStatus(s);
+    el.classList.remove('hidden');
+  } catch { /* keep last frame; retry next tick */ }
+}
+
+const PRINT_STATE_LABELS = {
+  running: '🖨️ 출력 중', pause: '⏸️ 일시정지', paused: '⏸️ 일시정지',
+  prepare: '⏳ 준비 중', slicing: '⏳ 슬라이싱 중', finish: '✅ 출력 완료',
+  failed: '⚠️ 출력 실패', idle: '⏹️ 대기 중', offline: '오프라인',
+};
+
+function fmtRemain(min) {
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return h > 0 ? `${h}시간 ${m}분` : `${m}분`;
+}
+
+function renderPrintStatus(s) {
+  const label = PRINT_STATE_LABELS[s.state] || escapeHtml(s.state);
+  const active = ['running', 'pause', 'paused', 'prepare'].includes(s.state);
+  const pct = Number.isFinite(s.progress) ? Math.max(0, Math.min(100, s.progress)) : null;
+  const items = [];
+  if (active && pct != null) items.push(`진행률 <strong>${pct}%</strong>`);
+  if (active && Number.isFinite(s.currentLayer) && Number.isFinite(s.totalLayers)) {
+    items.push(`레이어 <strong>${s.currentLayer} / ${s.totalLayers}</strong>`);
+  }
+  if (active && Number.isFinite(s.remainingMin) && s.remainingMin > 0) {
+    items.push(`남은 시간 <strong>${fmtRemain(s.remainingMin)}</strong>`);
+  }
+  return `
+    <div class="cs-head"><span class="cs-state">${label}</span></div>
+    ${active && pct != null ? `<div class="cs-bar"><div class="cs-bar-fill" style="width:${pct}%;"></div></div>` : ''}
+    ${items.length ? `<div class="cs-meta">${items.join('<span class="cs-sep">·</span>')}</div>` : ''}
+  `;
+}
 
 const GOOGLE_ICON_SVG = `
   <svg viewBox="0 0 24 24" aria-hidden="true" style="width:16px;height:16px;">
@@ -150,11 +216,13 @@ export async function renderHome(host, state, navigate) {
     <section id="camera-panel" class="panel camera-card ${cam.enabled ? '' : 'hidden'}">
       <h2>📹 실시간 프린터 카메라</h2>
       ${cam.enabled && cam.streamUrl ? `<img id="camera-stream" src="${cam.streamUrl}" alt="실시간 프린터 카메라">` : ''}
+      <div id="camera-status" class="camera-status hidden" aria-live="polite"></div>
     </section>
   `;
 
   renderDynamicFields(fields);
   wireCameraStream(document.getElementById('camera-stream'));
+  if (cam.enabled) startPrintStatusPolling();
   const control = wireQuoteForm(fields, state, navigate);
 
   mountNaverMap(place, mapsClientId).catch((err) => console.warn('naver map mount failed', err));
