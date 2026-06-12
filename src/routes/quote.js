@@ -6,12 +6,13 @@ import { ulid } from 'ulid';
 import { requireAuth, requireCsrfHeader } from '../auth.js';
 import { openDatabase, recordSmsLog } from '../db.js';
 import { config } from '../config.js';
-import { validateStl } from '../stl-validate.js';
+import { validateStl, validate3mf } from '../stl-validate.js';
 import { sendQuoteNotification } from '../brevo.js';
 import { sendSms, sensConfigured, smsByteLength } from '../sens.js';
 import { isUlid, maskEmail, maskPhone } from '../log-utils.js';
 
 const PHONE_RE = /^[0-9+\-() ]{6,24}$/;
+const mb = (n) => `${Math.round(n / (1024 * 1024))}MB`;
 
 const MAX_THUMB_BYTES = 512 * 1024;
 const MAX_THUMB_DIM = 512;
@@ -158,8 +159,9 @@ export default async function quoteRoutes(app) {
           continue;
         }
         const origName = String(part.filename || '').toLowerCase();
-        if (!origName.endsWith('.stl')) {
-          aborted = '.stl 확장자만 허용됩니다.';
+        const is3mf = origName.endsWith('.3mf');
+        if (!origName.endsWith('.stl') && !is3mf) {
+          aborted = 'STL 또는 3MF 파일만 허용됩니다.';
           part.file.resume();
           continue;
         }
@@ -179,20 +181,20 @@ export default async function quoteRoutes(app) {
           continue;
         }
         if (part.file.truncated || size > config.limits.fileSizeBytes) {
-          aborted = `파일 크기 제한(${config.limits.fileSizeBytes}) 초과`;
+          aborted = `파일 하나의 크기가 너무 큽니다 (최대 ${mb(config.limits.fileSizeBytes)}).`;
           await safeUnlink(filePath);
           continue;
         }
         totalBytes += size;
         if (totalBytes > config.limits.totalSizeBytes) {
-          aborted = `업로드 총합 크기 제한(${config.limits.totalSizeBytes}) 초과`;
+          aborted = `업로드 총합 크기가 너무 큽니다 (최대 ${mb(config.limits.totalSizeBytes)}).`;
           await safeUnlink(filePath);
           continue;
         }
 
-        const check = await validateStl(filePath);
+        const check = is3mf ? await validate3mf(filePath) : await validateStl(filePath);
         if (!check.ok) {
-          aborted = `STL 형식 검증 실패: ${check.reason}`;
+          aborted = `${is3mf ? '3MF' : 'STL'} 형식 검증 실패: ${check.reason}`;
           await safeUnlink(filePath);
           continue;
         }
@@ -215,10 +217,10 @@ export default async function quoteRoutes(app) {
       req.log.warn({ err }, 'multipart parsing failed');
       await cleanupUploads(acceptedFiles);
       if (err?.code === 'FST_FILES_LIMIT') {
-        return reply.code(413).send({ error: `파일 개수 제한(${config.limits.maxFilesPerQuote}) 초과` });
+        return reply.code(413).send({ error: `파일 개수가 너무 많습니다 (최대 ${config.limits.maxFilesPerQuote}개).` });
       }
       if (err?.code === 'FST_REQ_FILE_TOO_LARGE') {
-        return reply.code(413).send({ error: `파일 크기 제한(${config.limits.fileSizeBytes}) 초과` });
+        return reply.code(413).send({ error: `파일 하나의 크기가 너무 큽니다 (최대 ${mb(config.limits.fileSizeBytes)}).` });
       }
       return reply.code(400).send({ error: '업로드 처리 중 오류가 발생했습니다.' });
     }

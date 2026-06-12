@@ -68,6 +68,24 @@ async function countAsciiFacets(fh, size) {
   return triCount;
 }
 
+// 3MF is a ZIP container (OPC). Verify the local-file-header magic 'PK\x03\x04'.
+// We don't unzip — just guard against arbitrary binaries uploaded as .3mf.
+export async function validate3mf(filePath) {
+  const fh = await fs.open(filePath, 'r');
+  try {
+    const stat = await fh.stat();
+    if (stat.size < 22) return fail('too small for 3MF');
+    const magic = Buffer.alloc(4);
+    await fh.read(magic, 0, 4, 0);
+    if (magic[0] === 0x50 && magic[1] === 0x4b && magic[2] === 0x03 && magic[3] === 0x04) {
+      return { ok: true, format: '3mf', triangleCount: null };
+    }
+    return fail('not a valid 3MF (zip) file');
+  } finally {
+    await fh.close();
+  }
+}
+
 function fail(reason) {
   return { ok: false, reason };
 }

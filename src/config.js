@@ -49,7 +49,7 @@ export const config = {
     mapsClientId: optional('NAVER_MAPS_CLIENT_ID', ''),
   },
   limits: {
-    fileSizeBytes: 100 * 1024 * 1024,
+    fileSizeBytes: 200 * 1024 * 1024,
     totalSizeBytes: 500 * 1024 * 1024,
     maxFilesPerQuote: 20,
     userQuotaBytes: 1024 * 1024 * 1024,

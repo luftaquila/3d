@@ -27,12 +27,14 @@ export async function renderAdmin(host, state) {
     <section class="panel" id="settings-panel"></section>
     <section class="panel" id="smslog-panel"></section>
     <section class="panel" id="quotes-panel"></section>
+    <section class="panel" id="members-panel"></section>
   `;
 
   await Promise.all([
     renderSettings(),
     renderSmsLog(),
     renderQuotesAdmin(),
+    renderMembers(),
   ]);
 }
 
@@ -215,13 +217,51 @@ function renderSmsLogRow(e) {
   `;
 }
 
+async function renderMembers() {
+  const host = document.getElementById('members-panel');
+  host.innerHTML = `
+    <details class="collapse-card">
+      <summary>회원 목록</summary>
+      <div class="collapse-body" id="members-body"><p class="muted small">불러오는 중…</p></div>
+    </details>
+  `;
+  const body = document.getElementById('members-body');
+  try {
+    const { members } = await api('/api/admin/members');
+    body.innerHTML = members.length === 0 ? '<p class="muted small">회원이 없습니다.</p>' : `
+      <div style="overflow-x:auto;">
+        <table class="admin-table">
+          <thead><tr><th>이름</th><th>이메일</th><th>가입일</th><th>견적 수</th><th>매출</th><th>상태</th></tr></thead>
+          <tbody>${members.map(renderMemberRow).join('')}</tbody>
+        </table>
+      </div>
+    `;
+  } catch (err) {
+    body.innerHTML = `<p class="error small">불러오기 실패: ${escapeHtml(err.message || String(err))}</p>`;
+  }
+}
+
+function renderMemberRow(m) {
+  return `
+    <tr>
+      <td>${escapeHtml(m.name || '')}</td>
+      <td>${escapeHtml(m.email || '')}</td>
+      <td style="white-space:nowrap;">${fmtDate(m.createdAt)}</td>
+      <td>${m.quoteCount}</td>
+      <td style="white-space:nowrap;">${Number(m.revenue || 0).toLocaleString('ko-KR')}원</td>
+      <td>${m.withdrawn ? '<span class="tag tag-withdrawn">탈퇴</span>' : '<span class="success">활성</span>'}</td>
+    </tr>
+  `;
+}
+
 async function runBackfill() {
   const button = document.getElementById('backfill-start');
   const status = document.getElementById('backfill-status');
   button.disabled = true;
   status.textContent = '대상 조회 중...';
   try {
-    const { files } = await api('/api/admin/backfill/list');
+    const all = await api('/api/admin/backfill/list');
+    const files = (all.files || []).filter((f) => !/\.3mf$/i.test(f.filename));
     if (!files || files.length === 0) {
       status.textContent = '업데이트할 파일이 없습니다.';
       button.disabled = false;
@@ -412,15 +452,19 @@ async function renderQuotesAdmin() {
   const users = allUsers.sort((a, b) => a.email.localeCompare(b.email));
 
   host.innerHTML = `
-    <h2>견적 접수 내역 <span class="muted small">(${quotes.length}건)</span></h2>
-    <div class="filter-row">
-      <input type="search" id="q-search" placeholder="검색 (이름 / 전화 / 이메일 / ID)">
-      <select id="q-user">
-        <option value="">모든 사용자</option>
-        ${users.map((u) => `<option value="${escapeAttr(u.email)}">${u.name ? escapeHtml(u.name) + ' ' : ''}(${escapeHtml(u.email)})</option>`).join('')}
-      </select>
-    </div>
-    <div id="quote-list"></div>
+    <details class="collapse-card" open>
+      <summary>견적 접수 내역 <span class="muted small">(${quotes.length}건)</span></summary>
+      <div class="collapse-body">
+        <div class="filter-row">
+          <input type="search" id="q-search" placeholder="검색 (이름 / 전화 / 이메일 / ID)">
+          <select id="q-user">
+            <option value="">모든 사용자</option>
+            ${users.map((u) => `<option value="${escapeAttr(u.email)}">${u.name ? escapeHtml(u.name) + ' ' : ''}(${escapeHtml(u.email)})</option>`).join('')}
+          </select>
+        </div>
+        <div id="quote-list"></div>
+      </div>
+    </details>
   `;
 
   const listEl = document.getElementById('quote-list');
@@ -530,7 +574,7 @@ function renderQuoteCalc(q) {
 }
 
 function renderAdminFileCard(qid, f, hidden) {
-  const clickable = f.hasModel;
+  const clickable = f.hasModel && /\.stl$/i.test(f.filename);
   return `
     <div class="file-card ${clickable ? 'clickable' : ''}" data-qid="${qid}" data-fid="${f.id}" ${clickable ? 'title="클릭하여 미리보기"' : ''} ${hidden ? 'style="display:none;" data-extra' : ''}>
       ${renderWarningBadge(f)}

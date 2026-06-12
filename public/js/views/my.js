@@ -169,7 +169,7 @@ function renderQuote(q, fieldMap) {
 }
 
 function renderFileCard(qid, f, hidden) {
-  const clickable = f.hasModel;
+  const clickable = f.hasModel && /\.stl$/i.test(f.filename);
   return `
     <div class="file-card ${clickable ? 'clickable' : ''}" data-qid="${qid}" data-fid="${f.id}" ${clickable ? 'title="클릭하여 미리보기"' : ''} ${hidden ? 'style="display:none;" data-extra' : ''}>
       ${renderWarningBadge(f)}

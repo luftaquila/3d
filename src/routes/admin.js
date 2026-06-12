@@ -223,6 +223,29 @@ export default async function adminRoutes(app) {
     return { stats: { total, ok, fail: total - ok }, entries };
   });
 
+  // Member list with per-user stats (signup, quote count, revenue from final_cost).
+  app.get('/api/admin/members', { preHandler: requireAdmin }, async () => {
+    const db = openDatabase();
+    const rows = db.prepare(`
+      SELECT u.id, COALESCE(u.withdrawn_email, u.email) AS email, u.name,
+             u.created_at AS createdAt, u.withdrawn_at AS withdrawnAt,
+             (SELECT COUNT(*) FROM quotes q WHERE q.user_id = u.id AND q.deleted_at IS NULL) AS quoteCount,
+             (SELECT COALESCE(SUM(final_cost), 0) FROM quotes q WHERE q.user_id = u.id AND q.deleted_at IS NULL) AS revenue
+      FROM users u
+      ORDER BY u.created_at DESC
+    `).all();
+    return {
+      members: rows.map((m) => ({
+        email: m.email,
+        name: m.name ?? '',
+        createdAt: m.createdAt,
+        withdrawn: !!m.withdrawnAt,
+        quoteCount: m.quoteCount,
+        revenue: m.revenue,
+      })),
+    };
+  });
+
   app.get('/api/admin/backfill/list', { preHandler: requireAdmin }, async () => {
     const db = openDatabase();
     const rows = db.prepare(`
