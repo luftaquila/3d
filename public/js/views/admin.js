@@ -43,8 +43,7 @@ function renderTemplateEditor(t, vals, opts = {}) {
         <strong class="small">${escapeHtml(t.label)}</strong>
         ${opts.withEnable ? `<label class="muted small" style="display:flex;align-items:center;gap:6px;"><input type="checkbox" class="tpl-enable" ${opts.enabled ? 'checked' : ''} style="width:auto;"> 제출 시 자동 발송</label>` : ''}
       </div>
-      <input type="text" class="tpl-subject" placeholder="제목 (LMS)" value="${escapeAttr(vals.subject)}" style="width:100%;margin:4px 0;">
-      <textarea class="tpl-content" rows="3" style="font-family:var(--font-mono);font-size:13px;">${escapeHtml(vals.content)}</textarea>
+      <textarea class="tpl-content" rows="3" style="font-family:var(--font-mono);font-size:13px;margin-top:4px;">${escapeHtml(vals.content)}</textarea>
       <div class="row" style="justify-content:space-between;align-items:center;gap:8px;margin-top:4px;">
         <span class="muted small tpl-count"></span>
         <button class="btn tpl-save" style="padding:4px 12px;font-size:12px;">저장</button>
@@ -63,7 +62,6 @@ async function renderSettings() {
   const estPrice = settings.est_price_per_m ?? '500';
   const submitOn = settings.sms_submit_enabled === '1';
   const tplVals = (t) => ({
-    subject: settings[t.subjectKey] || '',
     content: settings[t.contentKey] || (t.id === 'quote' ? DEFAULT_QUOTE_TEMPLATE : ''),
   });
 
@@ -83,7 +81,7 @@ async function renderSettings() {
 
         <div class="settings-section">
           <h3>SMS 메시지 프리셋</h3>
-          <p class="muted small" style="margin:0 0 10px;">제목은 LMS(장문)에서만 사용됩니다. 치환자: <code>{amount}</code> 최종 금액, <code>{name}</code> 고객명, <code>{link}</code> 내 견적 링크.</p>
+          <p class="muted small" style="margin:0 0 10px;">치환자: <code>{amount}</code> 최종 금액, <code>{name}</code> 고객명, <code>{link}</code> 내 견적 링크.</p>
           ${SMS_TEMPLATES.map((t) => renderTemplateEditor(t, tplVals(t), { withEnable: t.id === 'submit', enabled: submitOn })).join('')}
         </div>
 
@@ -146,14 +144,13 @@ async function renderSettings() {
     const t = SMS_TEMPLATES.find((x) => x.id === el.dataset.tpl);
     if (!t) return;
     const contentEl = el.querySelector('.tpl-content');
-    const subjectEl = el.querySelector('.tpl-subject');
     const countEl = el.querySelector('.tpl-count');
     const enableEl = el.querySelector('.tpl-enable');
     const upd = () => { countEl.textContent = smsCountLabel(contentEl.value); };
     upd();
     contentEl.addEventListener('input', upd);
     el.querySelector('.tpl-save').addEventListener('click', async () => {
-      const body = { [t.contentKey]: contentEl.value, [t.subjectKey]: subjectEl.value };
+      const body = { [t.contentKey]: contentEl.value };
       if (enableEl && t.enableKey) body[t.enableKey] = enableEl.checked ? '1' : '0';
       try {
         await api('/api/admin/settings', { method: 'PUT', body });
@@ -408,6 +405,7 @@ async function renderQuotesAdmin() {
     api('/api/admin/settings'),
   ]);
   loadSmsTemplates(settings);
+  smsSubmitEnabled = settings.sms_submit_enabled === '1';
   estPricePerM = Number(settings.est_price_per_m) || 500;
   const fieldMap = new Map(fields.map((f) => [f.id, f]));
 
@@ -471,8 +469,11 @@ function renderAdminQuote(q, fieldMap) {
   return `
     <div class="quote-row">
       <div class="quote-row-header">
-        <div>
-          <div class="quote-date">${fmtDate(q.createdAt)} <span class="quote-id">#${q.id.slice(-8)}</span>${tags}</div>
+        <div style="flex:1;min-width:0;">
+          <div class="quote-date" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+            <span>${fmtDate(q.createdAt)} <span class="quote-id">#${q.id.slice(-8)}</span>${tags}</span>
+            <button class="btn danger hard-del-quote" data-qid="${q.id}" style="padding:4px 12px;font-size:12px;">완전 삭제</button>
+          </div>
           <div class="quote-meta">
             <span>${escapeHtml(q.name)}</span>
             <span>${escapeHtml(q.phone)}</span>
@@ -487,10 +488,7 @@ function renderAdminQuote(q, fieldMap) {
       </div>
       ${q.files.length >= 5 ? `<button class="btn ghost show-more-admin" data-qid="${q.id}" style="margin-top:8px;font-size:12px;padding:4px 12px;">+${q.files.length - 4}개 더보기</button>` : ''}
       ${renderQuoteCalc(q)}
-      <div class="row" style="justify-content:flex-end;gap:6px;margin-top:10px;">
-        ${q.files.length >= 2 ? `<button class="btn accent dl-all-admin" data-qid="${q.id}" style="padding:4px 12px;font-size:12px;">전체 다운로드</button>` : ''}
-        <button class="btn danger hard-del-quote" data-qid="${q.id}" style="padding:4px 12px;font-size:12px;">완전 삭제</button>
-      </div>
+      ${q.files.length >= 2 ? `<div class="row" style="justify-content:flex-end;gap:6px;margin-top:10px;"><button class="btn accent dl-all-admin" data-qid="${q.id}" style="padding:4px 12px;font-size:12px;">전체 다운로드</button></div>` : ''}
     </div>
   `;
 }
@@ -515,8 +513,7 @@ function renderQuoteCalc(q) {
           <strong class="small">SMS 발송</strong>
           <select class="sms-tpl-select" data-qid="${q.id}" style="max-width:55%;"></select>
         </div>
-        <input type="text" class="sms-subject" data-qid="${q.id}" placeholder="제목 (LMS)" style="width:100%;margin:4px 0;">
-        <textarea class="sms-text" data-qid="${q.id}" rows="5" placeholder="고객에게 보낼 문자 내용"></textarea>
+        <textarea class="sms-text" data-qid="${q.id}" rows="5" placeholder="고객에게 보낼 문자 내용" style="margin-top:4px;"></textarea>
         <div class="row" style="justify-content:space-between;align-items:center;gap:8px;">
           <span class="muted small sms-count" data-qid="${q.id}"></span>
           <button class="btn accent sms-send" data-qid="${q.id}" style="padding:4px 12px;font-size:12px;">SMS 전송</button>
@@ -660,7 +657,8 @@ const SMS_TEMPLATES = [
   { id: 'done3', label: '출력 완료 3', contentKey: 'sms_done3_template', subjectKey: 'sms_done3_subject' },
 ];
 const DEFAULT_QUOTE_TEMPLATE = '견적: {amount}원\n상세: {link}';
-let smsTemplates = {}; // id -> { label, subject, content }; loaded in renderQuotesAdmin
+let smsTemplates = {}; // id -> { label, content }; loaded in renderQuotesAdmin
+let smsSubmitEnabled = false; // when auto-send is on, hide 견적 접수 from the manual dropdown
 let estPricePerM = 500; // filament price per meter; loaded from settings
 
 function loadSmsTemplates(settings) {
@@ -668,7 +666,6 @@ function loadSmsTemplates(settings) {
   for (const t of SMS_TEMPLATES) {
     smsTemplates[t.id] = {
       label: t.label,
-      subject: settings[t.subjectKey] || '',
       content: settings[t.contentKey] || (t.id === 'quote' ? DEFAULT_QUOTE_TEMPLATE : ''),
     };
   }
@@ -704,7 +701,6 @@ function wireQuoteCalc(q) {
   if (!calcEl) return;
 
   const smsText = calcEl.querySelector('.sms-text');
-  const subjectEl = calcEl.querySelector('.sms-subject');
   const selectEl = calcEl.querySelector('.sms-tpl-select');
   const mEl = calcEl.querySelector('[data-calc="filamentM"]');
   const costEl = calcEl.querySelector('[data-calc="cost"]');
@@ -712,8 +708,12 @@ function wireQuoteCalc(q) {
   const finalEl = calcEl.querySelector('[data-calc="finalCost"]');
   const floor100 = (n) => Math.max(0, Math.floor(n / 100) * 100);
 
-  // Template dropdown: all templates with non-empty content. Default 견적 안내.
-  const available = SMS_TEMPLATES.filter((t) => (smsTemplates[t.id]?.content || '').trim());
+  // Template dropdown: templates with non-empty content. 견적 접수 is hidden while
+  // auto-send is on. Default 견적 안내.
+  const available = SMS_TEMPLATES.filter((t) => {
+    if (t.id === 'submit' && smsSubmitEnabled) return false;
+    return (smsTemplates[t.id]?.content || '').trim();
+  });
   selectEl.innerHTML = available.map((t) => `<option value="${t.id}">${escapeHtml(smsTemplates[t.id].label)}</option>`).join('');
   let selectedId = (available.find((t) => t.id === 'quote') || available[0])?.id || null;
   if (selectedId) selectEl.value = selectedId;
@@ -728,9 +728,7 @@ function wireQuoteCalc(q) {
   function refreshSms() {
     const tpl = selectedId ? smsTemplates[selectedId] : null;
     if (tpl) {
-      const d = { name: q.name, ...readCalcInputs(calcEl) };
-      subjectEl.value = substitutePlaceholders(tpl.subject, d);
-      smsText.value = substitutePlaceholders(tpl.content, d);
+      smsText.value = substitutePlaceholders(tpl.content, { name: q.name, ...readCalcInputs(calcEl) });
     }
     updateSmsCount(calcEl);
   }
@@ -785,7 +783,6 @@ function wireQuoteCalc(q) {
         method: 'POST',
         body: {
           message,
-          subject: subjectEl.value.trim(),
           kind: selectedId ? smsTemplates[selectedId].label : '수동',
         },
       });

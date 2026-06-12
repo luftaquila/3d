@@ -187,7 +187,6 @@ export default async function adminRoutes(app) {
     if (smsByteLength(message) > 2000) {
       return reply.code(400).send({ error: '메시지가 너무 깁니다 (LMS 2000바이트 초과).' });
     }
-    const subject = typeof req.body?.subject === 'string' ? req.body.subject.trim().slice(0, 40) : '';
     const kind = typeof req.body?.kind === 'string' ? req.body.kind.slice(0, 40) : '수동';
 
     const db = openDatabase();
@@ -196,11 +195,11 @@ export default async function adminRoutes(app) {
     const digits = String(quote.phone || '').replace(/\D/g, '');
     if (digits.length < 9) return reply.code(400).send({ error: '전화번호가 올바르지 않습니다.' });
 
-    const result = await sendSms(req.log, { to: digits, content: message, subject });
+    const result = await sendSms(req.log, { to: digits, content: message });
     recordSmsLog(db, {
       quoteId: id, name: quote.name, phone: quote.phone, kind,
       msgType: smsByteLength(message) > 90 ? 'LMS' : 'SMS',
-      subject, content: message, ok: result.ok, statusCode: result.status,
+      subject: null, content: message, ok: result.ok, statusCode: result.status,
     });
     if (!result.ok) {
       req.log.warn({ quoteId: id, phone: maskPhone(quote.phone), status: result.status }, 'admin sms send failed');

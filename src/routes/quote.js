@@ -310,13 +310,12 @@ export default async function quoteRoutes(app) {
     try {
       const enabled = db.prepare("SELECT value FROM settings WHERE key = 'sms_submit_enabled'").get()?.value === '1';
       const tpl = db.prepare("SELECT value FROM settings WHERE key = 'sms_submit_template'").get()?.value || '';
-      const subject = db.prepare("SELECT value FROM settings WHERE key = 'sms_submit_subject'").get()?.value || '';
       if (enabled && tpl.trim() && sensConfigured()) {
-        sendSms(req.log, { to: phone, content: tpl, subject })
+        sendSms(req.log, { to: phone, content: tpl })
           .then((result) => recordSmsLog(db, {
             quoteId, name, phone, kind: '견적 접수',
             msgType: smsByteLength(tpl) > 90 ? 'LMS' : 'SMS',
-            subject, content: tpl, ok: result.ok, statusCode: result.status,
+            subject: null, content: tpl, ok: result.ok, statusCode: result.status,
           }))
           .catch(() => {});
       }
