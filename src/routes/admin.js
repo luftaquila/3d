@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { ulid } from 'ulid';
 import { requireAdmin, requireCsrfHeader } from '../auth.js';
-import { openDatabase } from '../db.js';
+import { openDatabase, recordSmsLog } from '../db.js';
 import { config } from '../config.js';
 import { isUlid, maskPhone } from '../log-utils.js';
 import { sendSms, sensConfigured, smsByteLength } from '../sens.js';
@@ -44,6 +44,7 @@ export default async function adminRoutes(app) {
              q.created_at AS createdAt, q.deleted_at AS deletedAt,
              q.filament_g AS filamentG, q.filament_m AS filamentM,
              q.cost, q.discount, q.final_cost AS finalCost, q.comment,
+             NOT EXISTS (SELECT 1 FROM quotes q2 WHERE q2.user_id = q.user_id AND q2.created_at < q.created_at) AS isFirst,
              COALESCE(u.withdrawn_email, u.email) AS userEmail,
              u.name AS userName,
              u.withdrawn_at AS userWithdrawnAt
@@ -83,6 +84,7 @@ export default async function adminRoutes(app) {
         createdAt: q.createdAt,
         deletedAt: q.deletedAt,
         userWithdrawnAt: q.userWithdrawnAt,
+        isFirst: !!q.isFirst,
         filamentG: q.filamentG,
         filamentM: q.filamentM,
         cost: q.cost,
@@ -185,20 +187,41 @@ export default async function adminRoutes(app) {
     if (smsByteLength(message) > 2000) {
       return reply.code(400).send({ error: '메시지가 너무 깁니다 (LMS 2000바이트 초과).' });
     }
+    const subject = typeof req.body?.subject === 'string' ? req.body.subject.trim().slice(0, 40) : '';
+    const kind = typeof req.body?.kind === 'string' ? req.body.kind.slice(0, 40) : '수동';
 
     const db = openDatabase();
-    const quote = db.prepare('SELECT phone FROM quotes WHERE id = ?').get(id);
+    const quote = db.prepare('SELECT phone, name FROM quotes WHERE id = ?').get(id);
     if (!quote) return reply.code(404).send({ error: 'not found' });
     const digits = String(quote.phone || '').replace(/\D/g, '');
     if (digits.length < 9) return reply.code(400).send({ error: '전화번호가 올바르지 않습니다.' });
 
-    const result = await sendSms(req.log, { to: digits, content: message });
+    const result = await sendSms(req.log, { to: digits, content: message, subject });
+    recordSmsLog(db, {
+      quoteId: id, name: quote.name, phone: quote.phone, kind,
+      msgType: smsByteLength(message) > 90 ? 'LMS' : 'SMS',
+      subject, content: message, ok: result.ok, statusCode: result.status,
+    });
     if (!result.ok) {
       req.log.warn({ quoteId: id, phone: maskPhone(quote.phone), status: result.status }, 'admin sms send failed');
       return reply.code(502).send({ error: `SMS 전송 실패 (${result.status || 'network'})` });
     }
     req.log.info({ quoteId: id, phone: maskPhone(quote.phone) }, 'admin sms sent');
     return { ok: true };
+  });
+
+  // Admin SMS send log + simple stats (admin-only; stores full detail).
+  app.get('/api/admin/sms-log', { preHandler: requireAdmin }, async () => {
+    const db = openDatabase();
+    const entries = db.prepare(`
+      SELECT id, quote_id AS quoteId, name, phone, kind, msg_type AS msgType,
+             subject, content, ok, status_code AS statusCode, created_at AS createdAt
+      FROM sms_log ORDER BY created_at DESC LIMIT 200
+    `).all().map((r) => ({ ...r, ok: !!r.ok }));
+    const agg = db.prepare('SELECT COUNT(*) AS total, COALESCE(SUM(ok), 0) AS ok FROM sms_log').get();
+    const total = agg.total ?? 0;
+    const ok = agg.ok ?? 0;
+    return { stats: { total, ok, fail: total - ok }, entries };
   });
 
   app.get('/api/admin/backfill/list', { preHandler: requireAdmin }, async () => {
@@ -455,7 +478,11 @@ export default async function adminRoutes(app) {
   }, async (req, reply) => {
     const db = openDatabase();
     const body = req.body ?? {};
-    const allowed = new Set(['camera_enabled', 'home_html', 'est_wall_mm', 'est_infill_pct', 'est_price_per_m', 'sms_template', 'sms_submit_enabled', 'sms_submit_template']);
+    const allowed = new Set([
+      'camera_enabled', 'home_html', 'est_wall_mm', 'est_infill_pct', 'est_price_per_m',
+      'sms_template', 'sms_template_subject', 'sms_submit_enabled', 'sms_submit_template', 'sms_submit_subject',
+      'sms_done1_template', 'sms_done1_subject', 'sms_done2_template', 'sms_done2_subject', 'sms_done3_template', 'sms_done3_subject',
+    ]);
     const numericKeys = new Set(['est_wall_mm', 'est_infill_pct', 'est_price_per_m']);
     for (const [k, v] of Object.entries(body)) {
       if (numericKeys.has(k)) {

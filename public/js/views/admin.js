@@ -25,15 +25,32 @@ export async function renderAdmin(host, state) {
 
   host.innerHTML = `
     <section class="panel" id="settings-panel"></section>
-    <section class="panel" id="fields-panel"></section>
+    <section class="panel" id="smslog-panel"></section>
     <section class="panel" id="quotes-panel"></section>
   `;
 
   await Promise.all([
     renderSettings(),
-    renderFieldsAdmin(),
+    renderSmsLog(),
     renderQuotesAdmin(),
   ]);
+}
+
+function renderTemplateEditor(t, vals, opts = {}) {
+  return `
+    <div class="sms-tpl" data-tpl="${t.id}">
+      <div class="row" style="justify-content:space-between;align-items:center;gap:8px;">
+        <strong class="small">${escapeHtml(t.label)}</strong>
+        ${opts.withEnable ? `<label class="muted small" style="display:flex;align-items:center;gap:6px;"><input type="checkbox" class="tpl-enable" ${opts.enabled ? 'checked' : ''} style="width:auto;"> 제출 시 자동 발송</label>` : ''}
+      </div>
+      <input type="text" class="tpl-subject" placeholder="제목 (LMS)" value="${escapeAttr(vals.subject)}" style="width:100%;margin:4px 0;">
+      <textarea class="tpl-content" rows="3" style="font-family:var(--font-mono);font-size:13px;">${escapeHtml(vals.content)}</textarea>
+      <div class="row" style="justify-content:space-between;align-items:center;gap:8px;margin-top:4px;">
+        <span class="muted small tpl-count"></span>
+        <button class="btn tpl-save" style="padding:4px 12px;font-size:12px;">저장</button>
+      </div>
+    </div>
+  `;
 }
 
 async function renderSettings() {
@@ -44,83 +61,69 @@ async function renderSettings() {
   const estWall = settings.est_wall_mm ?? '1.0';
   const estInfill = settings.est_infill_pct ?? '15';
   const estPrice = settings.est_price_per_m ?? '500';
-  const smsTpl = settings.sms_template ?? '';
-  const smsSubmitOn = settings.sms_submit_enabled === '1';
-  const smsSubmitTpl = settings.sms_submit_template ?? '';
+  const submitOn = settings.sms_submit_enabled === '1';
+  const tplVals = (t) => ({
+    subject: settings[t.subjectKey] || '',
+    content: settings[t.contentKey] || (t.id === 'quote' ? DEFAULT_QUOTE_TEMPLATE : ''),
+  });
+
   host.innerHTML = `
-    <h2>설정</h2>
-    <label style="display:flex;align-items:center;gap:8px;">
-      <input type="checkbox" id="cam-toggle" ${cameraOn ? 'checked' : ''} style="width:auto;">
-      카메라 스트림을 메인 페이지에 표시
-    </label>
+    <details class="collapse-card">
+      <summary>설정</summary>
+      <div class="collapse-body">
+        <label style="display:flex;align-items:center;gap:8px;">
+          <input type="checkbox" id="cam-toggle" ${cameraOn ? 'checked' : ''} style="width:auto;">
+          카메라 스트림을 메인 페이지에 표시
+        </label>
 
-    <label for="home-html" style="margin-top:20px;">메인 페이지 공지 (HTML)</label>
-    <p class="muted small" style="margin:4px 0 8px;">비워두면 메인에 공지 영역이 표시되지 않습니다.</p>
-    <textarea id="home-html" style="min-height:220px;font-family:var(--font-mono);font-size:13px;">${escapeHtml(homeHtml)}</textarea>
-    <div class="row" style="margin-top:10px;">
-      <button class="btn" id="save-home-html">저장</button>
-    </div>
+        <label for="home-html" style="margin-top:20px;">메인 페이지 공지 (HTML)</label>
+        <p class="muted small" style="margin:4px 0 8px;">비워두면 메인에 공지 영역이 표시되지 않습니다.</p>
+        <textarea id="home-html" style="min-height:220px;font-family:var(--font-mono);font-size:13px;">${escapeHtml(homeHtml)}</textarea>
+        <div class="row" style="margin-top:10px;"><button class="btn" id="save-home-html">저장</button></div>
 
-    <div style="margin-top:24px;padding-top:20px;border-top:1px solid var(--border-light);">
-      <h3 style="margin:0 0 4px;">필라멘트 추정 보정</h3>
-      <p class="muted small" style="margin:0 0 10px;">표면적 기반 추정 파라미터입니다. 알려진 슬라이서 결과(g·m)와 맞도록 조정하세요. (밀도 1.24 g/cm³·필라멘트 1.75mm 고정)</p>
-      <div class="quote-calc-grid">
-        <label>벽 두께 (mm)<input type="number" step="0.1" min="0" id="est-wall" value="${escapeAttr(estWall)}"></label>
-        <label>충전율 (%)<input type="number" step="1" min="0" id="est-infill" value="${escapeAttr(estInfill)}"></label>
-        <label>단가 (원/m)<input type="number" step="1" min="0" id="est-price" value="${escapeAttr(estPrice)}"></label>
-      </div>
-      <div class="row" style="margin-top:10px;">
-        <button class="btn" id="save-estimate">저장</button>
-      </div>
-    </div>
+        <div class="settings-section">
+          <h3>SMS 메시지 프리셋</h3>
+          <p class="muted small" style="margin:0 0 10px;">제목은 LMS(장문)에서만 사용됩니다. 치환자: <code>{amount}</code> 최종 금액, <code>{name}</code> 고객명, <code>{link}</code> 내 견적 링크.</p>
+          ${SMS_TEMPLATES.map((t) => renderTemplateEditor(t, tplVals(t), { withEnable: t.id === 'submit', enabled: submitOn })).join('')}
+        </div>
 
-    <div style="margin-top:24px;padding-top:20px;border-top:1px solid var(--border-light);">
-      <h3 style="margin:0 0 4px;">SMS 메시지 프리셋</h3>
-      <p class="muted small" style="margin:0 0 8px;">견적건의 "SMS 전송"에서 기본으로 채워질 문구입니다. 치환자: <code>{amount}</code> 최종 금액, <code>{name}</code> 고객명, <code>{link}</code> 내 견적 링크.</p>
-      <textarea id="sms-template" style="min-height:90px;font-family:var(--font-mono);font-size:13px;" placeholder="견적: {amount}원\n상세: {link}">${escapeHtml(smsTpl)}</textarea>
-      <div class="row" style="margin-top:10px;">
-        <button class="btn" id="save-sms-template">저장</button>
-      </div>
-    </div>
+        <div class="settings-section">
+          <h3>필라멘트 추정 보정</h3>
+          <p class="muted small" style="margin:0 0 10px;">표면적 기반 추정 파라미터입니다. 알려진 슬라이서 결과(g·m)와 맞도록 조정하세요. (밀도 1.24 g/cm³·필라멘트 1.75mm 고정)</p>
+          <div class="quote-calc-grid">
+            <label>벽 두께 (mm)<input type="number" step="0.1" min="0" id="est-wall" value="${escapeAttr(estWall)}"></label>
+            <label>충전율 (%)<input type="number" step="1" min="0" id="est-infill" value="${escapeAttr(estInfill)}"></label>
+            <label>단가 (원/m)<input type="number" step="1" min="0" id="est-price" value="${escapeAttr(estPrice)}"></label>
+          </div>
+          <div class="row" style="margin-top:10px;"><button class="btn" id="save-estimate">저장</button></div>
+        </div>
 
-    <div style="margin-top:24px;padding-top:20px;border-top:1px solid var(--border-light);">
-      <h3 style="margin:0 0 4px;">견적 접수 자동 문자</h3>
-      <p class="muted small" style="margin:0 0 8px;">견적 제출 완료 시 고객에게 자동 발송할 문구입니다. (치환자 없음)</p>
-      <label style="display:flex;align-items:center;gap:8px;margin:0 0 8px;">
-        <input type="checkbox" id="sms-submit-on" ${smsSubmitOn ? 'checked' : ''} style="width:auto;">
-        견적 제출 완료 시 자동 발송
-      </label>
-      <textarea id="sms-submit-template" style="min-height:90px;font-family:var(--font-mono);font-size:13px;" placeholder="예: 견적 문의가 접수되었습니다. 확인 후 연락드리겠습니다.">${escapeHtml(smsSubmitTpl)}</textarea>
-      <div class="row" style="justify-content:space-between;align-items:center;gap:8px;margin-top:6px;">
-        <span class="muted small" id="sms-submit-count"></span>
-        <button class="btn" id="save-sms-submit">저장</button>
-      </div>
-    </div>
+        <div class="settings-section">
+          <h3>견적 폼 필드</h3>
+          <div id="fields-section"></div>
+        </div>
 
-    <div style="margin-top:24px;padding-top:20px;border-top:1px solid var(--border-light);">
-      <h3 style="margin:0 0 4px;">누락 정보 일괄 갱신</h3>
-      <p class="muted small" style="margin:0 0 10px;">이전에 업로드되어 썸네일 또는 watertight 분석이 없는 파일을 브라우저에서 재계산해 서버에 업데이트합니다. 파일 개수가 많으면 시간이 걸립니다.</p>
-      <div class="row" style="gap:8px;align-items:center;">
-        <button class="btn" id="backfill-start">시작</button>
-        <span class="muted small" id="backfill-status"></span>
+        <div class="settings-section">
+          <h3>누락 정보 일괄 갱신</h3>
+          <p class="muted small" style="margin:0 0 10px;">이전에 업로드되어 썸네일·watertight·부피 정보가 없는 파일을 브라우저에서 재계산해 서버에 업데이트합니다.</p>
+          <div class="row" style="gap:8px;align-items:center;">
+            <button class="btn" id="backfill-start">시작</button>
+            <span class="muted small" id="backfill-status"></span>
+          </div>
+        </div>
       </div>
-    </div>
+    </details>
   `;
+
   document.getElementById('cam-toggle').addEventListener('change', async (e) => {
     try {
-      await api('/api/admin/settings', {
-        method: 'PUT',
-        body: { camera_enabled: e.target.checked ? '1' : '0' },
-      });
+      await api('/api/admin/settings', { method: 'PUT', body: { camera_enabled: e.target.checked ? '1' : '0' } });
       toast('설정 저장됨', 'success');
     } catch (err) { toast(err.message, 'error'); }
   });
   document.getElementById('save-home-html').addEventListener('click', async () => {
     try {
-      await api('/api/admin/settings', {
-        method: 'PUT',
-        body: { home_html: document.getElementById('home-html').value },
-      });
+      await api('/api/admin/settings', { method: 'PUT', body: { home_html: document.getElementById('home-html').value } });
       toast('공지 저장됨', 'success');
     } catch (err) { toast(err.message, 'error'); }
   });
@@ -137,33 +140,82 @@ async function renderSettings() {
       toast('추정 파라미터 저장됨', 'success');
     } catch (err) { toast(err.message, 'error'); }
   });
-  document.getElementById('save-sms-template').addEventListener('click', async () => {
-    try {
-      await api('/api/admin/settings', {
-        method: 'PUT',
-        body: { sms_template: document.getElementById('sms-template').value },
-      });
-      toast('SMS 프리셋 저장됨', 'success');
-    } catch (err) { toast(err.message, 'error'); }
+
+  // SMS 템플릿 에디터들 (제목 + 본문 + 카운터 + 저장; 견적 접수는 on/off 포함)
+  host.querySelectorAll('.sms-tpl').forEach((el) => {
+    const t = SMS_TEMPLATES.find((x) => x.id === el.dataset.tpl);
+    if (!t) return;
+    const contentEl = el.querySelector('.tpl-content');
+    const subjectEl = el.querySelector('.tpl-subject');
+    const countEl = el.querySelector('.tpl-count');
+    const enableEl = el.querySelector('.tpl-enable');
+    const upd = () => { countEl.textContent = smsCountLabel(contentEl.value); };
+    upd();
+    contentEl.addEventListener('input', upd);
+    el.querySelector('.tpl-save').addEventListener('click', async () => {
+      const body = { [t.contentKey]: contentEl.value, [t.subjectKey]: subjectEl.value };
+      if (enableEl && t.enableKey) body[t.enableKey] = enableEl.checked ? '1' : '0';
+      try {
+        await api('/api/admin/settings', { method: 'PUT', body });
+        toast(`${t.label} 저장됨`, 'success');
+      } catch (err) { toast(err.message, 'error'); }
+    });
   });
-  const submitTa = document.getElementById('sms-submit-template');
-  const submitCount = document.getElementById('sms-submit-count');
-  const updateSubmitCount = () => { submitCount.textContent = smsCountLabel(submitTa.value); };
-  updateSubmitCount();
-  submitTa.addEventListener('input', updateSubmitCount);
-  document.getElementById('save-sms-submit').addEventListener('click', async () => {
-    try {
-      await api('/api/admin/settings', {
-        method: 'PUT',
-        body: {
-          sms_submit_enabled: document.getElementById('sms-submit-on').checked ? '1' : '0',
-          sms_submit_template: submitTa.value,
-        },
-      });
-      toast('자동 문자 설정 저장됨', 'success');
-    } catch (err) { toast(err.message, 'error'); }
-  });
+
   document.getElementById('backfill-start').addEventListener('click', runBackfill);
+  renderFieldsAdmin();
+}
+
+async function renderSmsLog() {
+  const host = document.getElementById('smslog-panel');
+  host.innerHTML = `
+    <details class="collapse-card">
+      <summary>메시지 전송 내역 및 통계</summary>
+      <div class="collapse-body" id="smslog-body"><p class="muted small">불러오는 중…</p></div>
+    </details>
+  `;
+  await loadSmsLog();
+}
+
+async function loadSmsLog() {
+  const body = document.getElementById('smslog-body');
+  if (!body) return;
+  try {
+    const { stats, entries } = await api('/api/admin/sms-log');
+    body.innerHTML = `
+      <div class="row" style="gap:16px;align-items:center;margin-bottom:10px;">
+        <span>총 <strong>${stats.total}</strong></span>
+        <span class="success">성공 <strong>${stats.ok}</strong></span>
+        <span class="error">실패 <strong>${stats.fail}</strong></span>
+        <button class="btn ghost" id="smslog-refresh" style="padding:2px 10px;font-size:11px;">새로고침</button>
+      </div>
+      ${entries.length === 0 ? '<p class="muted small">전송 내역이 없습니다.</p>' : `
+        <div style="overflow-x:auto;">
+          <table class="admin-table smslog-table">
+            <thead><tr><th>시각</th><th>종류</th><th>유형</th><th>결과</th><th>접수자</th><th>번호</th><th>견적#</th><th>본문</th></tr></thead>
+            <tbody>${entries.map(renderSmsLogRow).join('')}</tbody>
+          </table>
+        </div>`}
+    `;
+    document.getElementById('smslog-refresh')?.addEventListener('click', loadSmsLog);
+  } catch (err) {
+    body.innerHTML = `<p class="error small">불러오기 실패: ${escapeHtml(err.message || String(err))}</p>`;
+  }
+}
+
+function renderSmsLogRow(e) {
+  return `
+    <tr>
+      <td style="white-space:nowrap;">${fmtDate(e.createdAt)}</td>
+      <td>${escapeHtml(e.kind || '')}</td>
+      <td>${escapeHtml(e.msgType || '')}</td>
+      <td>${e.ok ? '<span class="success">성공</span>' : '<span class="error">실패</span>'}</td>
+      <td>${escapeHtml(e.name || '')}</td>
+      <td style="white-space:nowrap;">${escapeHtml(e.phone || '')}</td>
+      <td>${e.quoteId ? '#' + escapeHtml(String(e.quoteId).slice(-8)) : ''}</td>
+      <td style="white-space:pre-wrap;max-width:280px;">${escapeHtml(e.content || '')}</td>
+    </tr>
+  `;
 }
 
 async function runBackfill() {
@@ -239,10 +291,10 @@ function dataUrlToBlob(dataUrl) {
 }
 
 async function renderFieldsAdmin() {
-  const host = document.getElementById('fields-panel');
+  const host = document.getElementById('fields-section');
+  if (!host) return;
   const { fields } = await api('/api/admin/form-fields');
   host.innerHTML = `
-    <h2>견적 폼 필드</h2>
     <div style="overflow-x:auto;">
     <table class="admin-table">
       <thead><tr><th style="width:1%;">순서</th><th style="width:1%;">타입</th><th style="width:1%;">라벨</th><th style="width:1%;text-align:center;">필수</th><th>본문</th><th style="width:1%;text-align:center;"></th></tr></thead>
@@ -355,7 +407,7 @@ async function renderQuotesAdmin() {
     api('/api/form-fields'),
     api('/api/admin/settings'),
   ]);
-  smsTemplate = settings.sms_template || DEFAULT_SMS_TEMPLATE;
+  loadSmsTemplates(settings);
   estPricePerM = Number(settings.est_price_per_m) || 500;
   const fieldMap = new Map(fields.map((f) => [f.id, f]));
 
@@ -402,6 +454,8 @@ function renderAdminQuote(q, fieldMap) {
   const tags = [
     q.deletedAt ? '<span class="tag tag-deleted">삭제</span>' : '',
     q.userWithdrawnAt ? '<span class="tag tag-withdrawn">탈퇴</span>' : '',
+    q.isFirst ? '<span class="tag tag-first">첫 견적</span>' : '',
+    (q.userEmail && q.userEmail.toLowerCase().endsWith('ac.kr')) ? '<span class="tag tag-student">학생</span>' : '',
   ].join('');
   const answerEntries = Object.entries(q.answers).filter(([, v]) => v && v !== '0');
   const answersHtml = answerEntries.length > 0 ? `
@@ -457,7 +511,11 @@ function renderQuoteCalc(q) {
         <button class="btn accent calc-save" data-qid="${q.id}" style="padding:4px 12px;font-size:12px;">견적 저장</button>
       </div>
       <div class="quote-sms">
-        <strong class="small">SMS 발송</strong>
+        <div class="row" style="justify-content:space-between;align-items:center;gap:8px;">
+          <strong class="small">SMS 발송</strong>
+          <select class="sms-tpl-select" data-qid="${q.id}" style="max-width:55%;"></select>
+        </div>
+        <input type="text" class="sms-subject" data-qid="${q.id}" placeholder="제목 (LMS)" style="width:100%;margin:4px 0;">
         <textarea class="sms-text" data-qid="${q.id}" rows="5" placeholder="고객에게 보낼 문자 내용"></textarea>
         <div class="row" style="justify-content:space-between;align-items:center;gap:8px;">
           <span class="muted small sms-count" data-qid="${q.id}"></span>
@@ -590,17 +648,35 @@ function hasNum(v) {
   return v !== '' && v !== null && v !== undefined && Number.isFinite(Number(v));
 }
 
-// SMS body is built from an admin-editable template (stored in settings, loaded
-// in renderQuotesAdmin). Placeholders: {amount} final/cost in won, {name}, {link}.
-// The source default is intentionally generic — the real wording/account lives
-// only in the DB setting, never in code.
-const DEFAULT_SMS_TEMPLATE = '견적: {amount}원\n상세: {link}';
-let smsTemplate = DEFAULT_SMS_TEMPLATE;
+// SMS message templates (subject + content), stored in settings. The source
+// defaults are intentionally generic — real wording/accounts live only in the DB.
+// Placeholders (applied to both subject and content): {amount} final/cost in won,
+// {name} customer, {link} the /my page.
+const SMS_TEMPLATES = [
+  { id: 'submit', label: '견적 접수', contentKey: 'sms_submit_template', subjectKey: 'sms_submit_subject', enableKey: 'sms_submit_enabled' },
+  { id: 'quote', label: '견적 안내', contentKey: 'sms_template', subjectKey: 'sms_template_subject' },
+  { id: 'done1', label: '출력 완료 1', contentKey: 'sms_done1_template', subjectKey: 'sms_done1_subject' },
+  { id: 'done2', label: '출력 완료 2', contentKey: 'sms_done2_template', subjectKey: 'sms_done2_subject' },
+  { id: 'done3', label: '출력 완료 3', contentKey: 'sms_done3_template', subjectKey: 'sms_done3_subject' },
+];
+const DEFAULT_QUOTE_TEMPLATE = '견적: {amount}원\n상세: {link}';
+let smsTemplates = {}; // id -> { label, subject, content }; loaded in renderQuotesAdmin
 let estPricePerM = 500; // filament price per meter; loaded from settings
 
-function composeSms(d) {
+function loadSmsTemplates(settings) {
+  smsTemplates = {};
+  for (const t of SMS_TEMPLATES) {
+    smsTemplates[t.id] = {
+      label: t.label,
+      subject: settings[t.subjectKey] || '',
+      content: settings[t.contentKey] || (t.id === 'quote' ? DEFAULT_QUOTE_TEMPLATE : ''),
+    };
+  }
+}
+
+function substitutePlaceholders(text, d) {
   const amount = hasNum(d.finalCost) ? Number(d.finalCost) : (hasNum(d.cost) ? Number(d.cost) : null);
-  return (smsTemplate || DEFAULT_SMS_TEMPLATE)
+  return String(text || '')
     .split('{amount}').join(amount != null ? fmtWon(amount) : '')
     .split('{name}').join(d.name || '')
     .split('{link}').join(`${location.origin}/my`);
@@ -628,22 +704,37 @@ function wireQuoteCalc(q) {
   if (!calcEl) return;
 
   const smsText = calcEl.querySelector('.sms-text');
+  const subjectEl = calcEl.querySelector('.sms-subject');
+  const selectEl = calcEl.querySelector('.sms-tpl-select');
   const mEl = calcEl.querySelector('[data-calc="filamentM"]');
   const costEl = calcEl.querySelector('[data-calc="cost"]');
   const discountEl = calcEl.querySelector('[data-calc="discount"]');
   const finalEl = calcEl.querySelector('[data-calc="finalCost"]');
   const floor100 = (n) => Math.max(0, Math.floor(n / 100) * 100);
 
+  // Template dropdown: all templates with non-empty content. Default 견적 안내.
+  const available = SMS_TEMPLATES.filter((t) => (smsTemplates[t.id]?.content || '').trim());
+  selectEl.innerHTML = available.map((t) => `<option value="${t.id}">${escapeHtml(smsTemplates[t.id].label)}</option>`).join('');
+  let selectedId = (available.find((t) => t.id === 'quote') || available[0])?.id || null;
+  if (selectedId) selectEl.value = selectedId;
+  if (available.length === 0) selectEl.style.display = 'none';
+
   // Pre-rounding cost basis. Filament m sets it to m×단가; a manual cost edit
   // sets it to the typed cost. Final = floor100(basis × (1 − discount%)).
   let rawBasis = hasNum(costEl.value) ? Number(costEl.value)
     : (hasNum(mEl.value) ? Number(mEl.value) * estPricePerM : null);
 
-  // SMS body always reflects the current calc values (live, no fill button).
+  // SMS subject+body reflect the selected template, substituted with calc values.
   function refreshSms() {
-    smsText.value = composeSms({ name: q.name, ...readCalcInputs(calcEl) });
+    const tpl = selectedId ? smsTemplates[selectedId] : null;
+    if (tpl) {
+      const d = { name: q.name, ...readCalcInputs(calcEl) };
+      subjectEl.value = substitutePlaceholders(tpl.subject, d);
+      smsText.value = substitutePlaceholders(tpl.content, d);
+    }
     updateSmsCount(calcEl);
   }
+  selectEl.addEventListener('change', () => { selectedId = selectEl.value; refreshSms(); });
   function applyFinal() {
     if (rawBasis != null) {
       const pct = hasNum(discountEl.value) ? Number(discountEl.value) : 0;
@@ -690,7 +781,14 @@ function wireQuoteCalc(q) {
     const btn = e.currentTarget;
     btn.disabled = true;
     try {
-      await api(`/api/admin/quotes/${q.id}/send-sms`, { method: 'POST', body: { message } });
+      await api(`/api/admin/quotes/${q.id}/send-sms`, {
+        method: 'POST',
+        body: {
+          message,
+          subject: subjectEl.value.trim(),
+          kind: selectedId ? smsTemplates[selectedId].label : '수동',
+        },
+      });
       toast('SMS를 전송했습니다.', 'success');
     } catch (err) {
       toast(`전송 실패: ${err.message}`, 'error');

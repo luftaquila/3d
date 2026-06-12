@@ -1,9 +1,23 @@
 import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
+import { ulid } from 'ulid';
 import { config } from './config.js';
 
 let db;
+
+// Append a row to sms_log. Best-effort: a logging failure must never break a send.
+export function recordSmsLog(db, { quoteId, name, phone, kind, msgType, subject, content, ok, statusCode }) {
+  try {
+    db.prepare(`
+      INSERT INTO sms_log (id, quote_id, name, phone, kind, msg_type, subject, content, ok, status_code, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      ulid(), quoteId ?? null, name ?? null, phone ?? null, kind ?? null,
+      msgType ?? null, subject ?? null, content ?? null, ok ? 1 : 0, statusCode ?? null, Date.now(),
+    );
+  } catch { /* ignore */ }
+}
 
 export function openDatabase() {
   if (db) return db;
@@ -73,6 +87,21 @@ function migrate(db) {
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS sms_log (
+      id TEXT PRIMARY KEY,
+      quote_id TEXT,
+      name TEXT,
+      phone TEXT,
+      kind TEXT,
+      msg_type TEXT,
+      subject TEXT,
+      content TEXT,
+      ok INTEGER NOT NULL,
+      status_code INTEGER,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_smslog_created ON sms_log(created_at DESC);
   `);
 
   const existing = db.prepare('SELECT COUNT(*) AS c FROM settings').get();

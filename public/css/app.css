@@ -824,6 +824,42 @@ input:focus, textarea:focus, select:focus {
   color: #ff9f0a;
   border: 1px solid rgba(255, 159, 10, 0.35);
 }
+.tag-first {
+  background: rgba(48, 209, 88, 0.15);
+  color: #30d158;
+  border: 1px solid rgba(48, 209, 88, 0.35);
+}
+.tag-student {
+  background: rgba(0, 122, 255, 0.15);
+  color: #4aa3ff;
+  border: 1px solid rgba(0, 122, 255, 0.35);
+}
+
+/* Collapsible admin cards (settings, sms log) */
+details.collapse-card > summary {
+  cursor: pointer;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  list-style: none;
+}
+details.collapse-card > summary::-webkit-details-marker { display: none; }
+details.collapse-card > summary::before {
+  content: '▸';
+  display: inline-block;
+  width: 1em;
+  color: var(--text-muted);
+}
+details.collapse-card[open] > summary::before { content: '▾'; }
+.collapse-body { margin-top: 14px; }
+.settings-section {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border-light);
+}
+.settings-section > h3 { margin: 0 0 6px; }
+.sms-tpl { margin-top: 14px; }
+.sms-tpl .tpl-subject, .sms-tpl .tpl-content { width: 100%; }
 .quote-meta {
   color: var(--text-muted);
   font-size: 15px;

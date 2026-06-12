@@ -4,11 +4,11 @@ import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { ulid } from 'ulid';
 import { requireAuth, requireCsrfHeader } from '../auth.js';
-import { openDatabase } from '../db.js';
+import { openDatabase, recordSmsLog } from '../db.js';
 import { config } from '../config.js';
 import { validateStl } from '../stl-validate.js';
 import { sendQuoteNotification } from '../brevo.js';
-import { sendSms, sensConfigured } from '../sens.js';
+import { sendSms, sensConfigured, smsByteLength } from '../sens.js';
 import { isUlid, maskEmail, maskPhone } from '../log-utils.js';
 
 const PHONE_RE = /^[0-9+\-() ]{6,24}$/;
@@ -310,8 +310,15 @@ export default async function quoteRoutes(app) {
     try {
       const enabled = db.prepare("SELECT value FROM settings WHERE key = 'sms_submit_enabled'").get()?.value === '1';
       const tpl = db.prepare("SELECT value FROM settings WHERE key = 'sms_submit_template'").get()?.value || '';
+      const subject = db.prepare("SELECT value FROM settings WHERE key = 'sms_submit_subject'").get()?.value || '';
       if (enabled && tpl.trim() && sensConfigured()) {
-        sendSms(req.log, { to: phone, content: tpl }).catch(() => {});
+        sendSms(req.log, { to: phone, content: tpl, subject })
+          .then((result) => recordSmsLog(db, {
+            quoteId, name, phone, kind: '견적 접수',
+            msgType: smsByteLength(tpl) > 90 ? 'LMS' : 'SMS',
+            subject, content: tpl, ok: result.ok, statusCode: result.status,
+          }))
+          .catch(() => {});
       }
     } catch (err) {
       req.log.warn({ err }, 'submit sms check failed');
