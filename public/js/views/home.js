@@ -75,21 +75,12 @@ async function pollPrintStatus() {
     const s = await api('/api/camera/print-status');
     const el = document.getElementById('camera-status');
     if (!el) return;
-    if (!s.enabled || !s.available || !s.state) {
-      el.classList.add('hidden');
-      el.innerHTML = '';
-      return;
-    }
-    el.innerHTML = renderPrintStatus(s);
+    const html = (s.enabled && s.available && s.state) ? renderPrintStatus(s) : '';
+    if (!html) { el.classList.add('hidden'); el.innerHTML = ''; return; }
+    el.innerHTML = html;
     el.classList.remove('hidden');
   } catch { /* keep last frame; retry next tick */ }
 }
-
-const PRINT_STATE_LABELS = {
-  running: '🖨️ 출력 중', pause: '⏸️ 일시정지', paused: '⏸️ 일시정지',
-  prepare: '⏳ 준비 중', slicing: '⏳ 슬라이싱 중', finish: '✅ 출력 완료',
-  failed: '⚠️ 출력 실패', idle: '⏹️ 대기 중', offline: '오프라인',
-};
 
 function fmtRemain(min) {
   const h = Math.floor(min / 60);
@@ -97,23 +88,22 @@ function fmtRemain(min) {
   return h > 0 ? `${h}시간 ${m}분` : `${m}분`;
 }
 
+// One compact line under the camera: remaining time, then layer with progress
+// in parens. Empty (hidden) when the printer isn't actively printing.
 function renderPrintStatus(s) {
-  const label = PRINT_STATE_LABELS[s.state] || escapeHtml(s.state);
-  const active = ['running', 'pause', 'paused', 'prepare'].includes(s.state);
+  if (!['running', 'pause', 'paused', 'prepare'].includes(s.state)) return '';
   const pct = Number.isFinite(s.progress) ? Math.max(0, Math.min(100, s.progress)) : null;
-  const items = [];
-  if (active && pct != null) items.push(`진행률 <strong>${pct}%</strong>`);
-  if (active && Number.isFinite(s.currentLayer) && Number.isFinite(s.totalLayers)) {
-    items.push(`레이어 <strong>${s.currentLayer} / ${s.totalLayers}</strong>`);
+  const hasLayers = Number.isFinite(s.currentLayer) && Number.isFinite(s.totalLayers);
+  const parts = [];
+  if (Number.isFinite(s.remainingMin) && s.remainingMin > 0) {
+    parts.push(`남은 시간 <strong>${fmtRemain(s.remainingMin)}</strong>`);
   }
-  if (active && Number.isFinite(s.remainingMin) && s.remainingMin > 0) {
-    items.push(`남은 시간 <strong>${fmtRemain(s.remainingMin)}</strong>`);
+  if (pct != null) {
+    parts.push(`진행률 <strong>${pct}%</strong>${hasLayers ? ` (레이어 ${s.currentLayer} / ${s.totalLayers})` : ''}`);
+  } else if (hasLayers) {
+    parts.push(`레이어 ${s.currentLayer} / ${s.totalLayers}`);
   }
-  return `
-    <div class="cs-head"><span class="cs-state">${label}</span></div>
-    ${active && pct != null ? `<div class="cs-bar"><div class="cs-bar-fill" style="width:${pct}%;"></div></div>` : ''}
-    ${items.length ? `<div class="cs-meta">${items.join('<span class="cs-sep">·</span>')}</div>` : ''}
-  `;
+  return parts.join(' · ');
 }
 
 const GOOGLE_ICON_SVG = `

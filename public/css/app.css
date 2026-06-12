@@ -619,38 +619,12 @@ input:focus, textarea:focus, select:focus {
 }
 
 .camera-status {
-  margin-top: 12px;
-  padding: 12px 14px;
-  border: 1px solid var(--border-light);
-  border-radius: var(--radius-sm);
-  background: var(--bg-surface);
-}
-.camera-status .cs-head { display: flex; align-items: center; }
-.camera-status .cs-state { font-weight: 600; font-size: 15px; }
-.camera-status .cs-bar {
   margin-top: 10px;
-  height: 8px;
-  border-radius: 999px;
-  background: var(--border-light);
-  overflow: hidden;
-}
-.camera-status .cs-bar-fill {
-  height: 100%;
-  border-radius: 999px;
-  background: var(--accent, #4285f4);
-  transition: width 0.4s ease;
-}
-.camera-status .cs-meta {
-  margin-top: 10px;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
+  text-align: center;
   font-size: 13px;
   color: var(--text-muted);
 }
-.camera-status .cs-meta strong { color: var(--text); font-weight: 600; }
-.camera-status .cs-sep { color: var(--border); }
+.camera-status strong { color: var(--text); font-weight: 600; }
 
 /* Admin quote calculation + SMS */
 .quote-calc {
