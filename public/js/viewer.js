@@ -37,10 +37,16 @@ function formatCm3(mm3) {
   return Math.round(cm3).toLocaleString();
 }
 
-function createMeshFromWasm(mesh) {
+// 3MF declares Z-up by spec; three.js scenes are Y-up. Rotate the display
+// geometry -90° about X so 3MF models (and Bambu build plates) sit upright on
+// the grid like in a slicer. STL has no canonical up-axis (uploads are mixed),
+// so it stays in raw coordinates. Display-only — the WASM analyzer keeps native
+// coords, so volume/dimension metrics are unaffected.
+function createMeshFromWasm(mesh, rotate = false) {
   const geom = new THREE.BufferGeometry();
   geom.setAttribute('position', new THREE.BufferAttribute(mesh.positions.slice(), 3));
   geom.setAttribute('normal', new THREE.BufferAttribute(mesh.normals.slice(), 3));
+  if (rotate) geom.rotateX(-Math.PI / 2);
   const mat = new THREE.MeshStandardMaterial({
     color: 0xbcc2cc,
     metalness: 0.1,
@@ -53,10 +59,11 @@ function createMeshFromWasm(mesh) {
 const EDGE_COLOR_BOUNDARY = 0xff3b30;
 const EDGE_COLOR_NON_MANIFOLD = 0x00d4ff;
 
-function createEdgeOverlay(positions, color) {
+function createEdgeOverlay(positions, color, rotate = false) {
   if (!positions || positions.length === 0) return null;
   const geom = new THREE.BufferGeometry();
   geom.setAttribute('position', new THREE.BufferAttribute(positions.slice(), 3));
+  if (rotate) geom.rotateX(-Math.PI / 2);
   const mat = new THREE.LineBasicMaterial({
     color,
     transparent: true,
@@ -143,16 +150,17 @@ export async function mountViewer(container, items, options = {}) {
   const nonManifoldOverlays = [];
   const cols = Math.ceil(Math.sqrt(parsed.length));
   const bounds = parsed.map((p) => {
-    const m = createMeshFromWasm(p.mesh);
+    const rotate = /\.3mf$/i.test(p.name || '');
+    const m = createMeshFromWasm(p.mesh, rotate);
     m.geometry.computeBoundingBox();
     const bb = m.geometry.boundingBox;
     const size = bb.getSize(new THREE.Vector3());
     const center = bb.getCenter(new THREE.Vector3());
     m.position.sub(center);
 
-    const boundary = createEdgeOverlay(p.mesh.boundaryEdgePositions, EDGE_COLOR_BOUNDARY);
+    const boundary = createEdgeOverlay(p.mesh.boundaryEdgePositions, EDGE_COLOR_BOUNDARY, rotate);
     if (boundary) { m.add(boundary); boundaryOverlays.push(boundary); }
-    const nonManifold = createEdgeOverlay(p.mesh.nonManifoldEdgePositions, EDGE_COLOR_NON_MANIFOLD);
+    const nonManifold = createEdgeOverlay(p.mesh.nonManifoldEdgePositions, EDGE_COLOR_NON_MANIFOLD, rotate);
     if (nonManifold) { m.add(nonManifold); nonManifoldOverlays.push(nonManifold); }
 
     return { mesh: m, size, center };

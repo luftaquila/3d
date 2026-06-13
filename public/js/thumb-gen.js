@@ -10,6 +10,9 @@ export async function generateThumbnail(arrayBuffer, name, size = 512) {
   const geom = new THREE.BufferGeometry();
   geom.setAttribute('position', new THREE.BufferAttribute(mesh.positions.slice(), 3));
   geom.setAttribute('normal', new THREE.BufferAttribute(mesh.normals.slice(), 3));
+  // 3MF is Z-up by spec; rotate the thumbnail geometry to Y-up so it matches the
+  // upright viewer orientation. STL stays in raw coords (no canonical up-axis).
+  if (/\.3mf$/i.test(name || '')) geom.rotateX(-Math.PI / 2);
   geom.computeBoundingBox();
 
   const bb = geom.boundingBox;
