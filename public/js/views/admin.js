@@ -513,16 +513,14 @@ function readFieldRow(row) {
 
 async function renderQuotesAdmin() {
   const host = document.getElementById('quotes-panel');
-  const [{ quotes, users: allUsers }, { fields }, { settings }, printStatus] = await Promise.all([
+  const [{ quotes, users: allUsers }, { fields }, { settings }] = await Promise.all([
     api('/api/admin/quotes'),
     api('/api/form-fields'),
     api('/api/admin/settings'),
-    api('/api/camera/print-status').catch(() => null),
   ]);
   loadSmsTemplates(settings);
   smsSubmitEnabled = settings.sms_submit_enabled === '1';
   estPricePerM = Number(settings.est_price_per_m) || 500;
-  printEtaText = computeEtaText(printStatus);
   const fieldMap = new Map(fields.map((f) => [f.id, f]));
 
   const users = allUsers.sort((a, b) => a.email.localeCompare(b.email));
@@ -816,9 +814,9 @@ function loadSmsTemplates(settings) {
   });
 }
 
-// {eta} fills the in-progress print's estimated finish time, snapshotted at page
-// load as an absolute wall-clock (so it doesn't drift); '' when no print is running.
-// Format: "DD일 HH:MM" (24-hour, local/KST).
+// {eta} fills the in-progress print's estimated finish time as an absolute
+// wall-clock; '' when no print is running. Refreshed when a template with {eta}
+// is selected (see refreshPrintEta). Format: "DD일 HH:MM" (24-hour, local/KST).
 function formatEta(date) {
   const day = String(date.getDate()).padStart(2, '0');
   const hh = String(date.getHours()).padStart(2, '0');
@@ -830,6 +828,16 @@ function computeEtaText(status) {
   const rem = status.remainingMin;
   if (!Number.isFinite(rem) || rem <= 0) return '';
   return formatEta(new Date(Date.now() + rem * 60000));
+}
+
+// Re-read the live ETA when a template containing {eta} is selected, so the
+// inserted finish time reflects the printer's current estimate at that moment
+// (not page-load time). No-op for templates without {eta}.
+async function refreshPrintEta(content) {
+  if (!String(content || '').includes('{eta}')) return;
+  try {
+    printEtaText = computeEtaText(await api('/api/camera/print-status'));
+  } catch { /* keep previous value */ }
 }
 
 function substitutePlaceholders(text, d) {
@@ -894,7 +902,11 @@ function wireQuoteCalc(q) {
     }
     updateSmsCount(calcEl);
   }
-  selectEl.addEventListener('change', () => { selectedId = selectEl.value; refreshSms(); });
+  selectEl.addEventListener('change', async () => {
+    selectedId = selectEl.value;
+    await refreshPrintEta(smsTemplates[selectedId]?.content);
+    refreshSms();
+  });
   function applyFinal() {
     if (rawBasis != null) {
       const pct = hasNum(discountEl.value) ? Number(discountEl.value) : 0;
