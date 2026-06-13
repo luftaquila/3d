@@ -784,7 +784,7 @@ let smsTemplates = {};        // id -> { label, content }
 let smsTemplateOrder = [];    // ordered ids for the send dropdown
 let smsSubmitEnabled = false; // when auto-send is on, hide 견적 접수 from the manual dropdown
 let estPricePerM = 500;       // filament price per meter; loaded from settings
-let printEtaText = '';        // in-progress print ETA "DD일 h:mm AM/PM" for {eta}; '' when idle
+let printEtaText = '';        // in-progress print ETA "DD일 HH:MM" (24h) for {eta}; '' when idle
 
 // Message templates are a free-form list (title + content) stored as JSON in
 // settings.sms_done_list. Falls back to migrating the legacy fixed slots.
@@ -818,13 +818,12 @@ function loadSmsTemplates(settings) {
 
 // {eta} fills the in-progress print's estimated finish time, snapshotted at page
 // load as an absolute wall-clock (so it doesn't drift); '' when no print is running.
+// Format: "DD일 HH:MM" (24-hour, local/KST).
 function formatEta(date) {
   const day = String(date.getDate()).padStart(2, '0');
-  let h = date.getHours();
-  const ampm = h < 12 ? 'AM' : 'PM';
-  h = h % 12 || 12;
+  const hh = String(date.getHours()).padStart(2, '0');
   const mm = String(date.getMinutes()).padStart(2, '0');
-  return `${day}일 ${h}:${mm} ${ampm}`;
+  return `${day}일 ${hh}:${mm}`;
 }
 function computeEtaText(status) {
   if (!status?.enabled || !status.available) return '';
