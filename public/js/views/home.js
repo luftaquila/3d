@@ -180,7 +180,7 @@ export async function renderHome(host, state, navigate) {
 
       <label>📂 STL / 3MF 파일 업로드 <span style="color:var(--danger)">*</span></label>
       <input id="f-files" type="file" accept=".stl,.3mf" multiple />
-      <p class="muted small" style="margin:4px 0 10px;">모델은 제출 전까지 서버로 전송되지 않습니다.<br>STL은 파일 카드를 클릭하면 3D 뷰어가 열립니다. (3MF는 미리보기 미지원)</p>
+      <p class="muted small" style="margin:4px 0 10px;">모델은 제출 전까지 서버로 전송되지 않습니다.<br>파일 카드를 클릭하면 3D 뷰어가 열립니다. (STL · 3MF)</p>
       <div id="file-preview-list" class="file-grid"></div>
 
       <div class="panel panel-2 consent-box" id="consent-box" style="margin-top:18px;">
@@ -477,11 +477,9 @@ function wireQuoteForm(fields, state, navigate) {
       if (entries.has(f.name) && entries.get(f.name).thumb) continue;
       entries.set(f.name, {});
       renderCards();
-      // 3MF: the WASM parser only handles STL — skip thumbnail/metrics.
-      if (/\.3mf$/i.test(f.name)) continue;
       try {
         const buf = await readBuffer(f);
-        const { dataUrl, triangleCount, isWatertight, boundaryEdges, nonManifoldEdges, volume, surfaceArea } = await generateThumbnail(buf);
+        const { dataUrl, triangleCount, isWatertight, boundaryEdges, nonManifoldEdges, volume, surfaceArea } = await generateThumbnail(buf, f.name);
         entries.set(f.name, {
           thumb: dataUrl,
           tris: triangleCount,

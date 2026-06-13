@@ -1,9 +1,8 @@
 import * as THREE from 'three';
-import { loadStlWasm } from './stl-wasm.js';
+import { parseModel } from './model-parse.js';
 
-export async function generateThumbnail(arrayBuffer, size = 512) {
-  const mod = await loadStlWasm();
-  const mesh = mod.parse_stl(new Uint8Array(arrayBuffer));
+export async function generateThumbnail(arrayBuffer, name, size = 512) {
+  const mesh = await parseModel(arrayBuffer, name);
 
   const scene = new THREE.Scene();
   scene.background = null;

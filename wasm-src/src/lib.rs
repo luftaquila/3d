@@ -83,6 +83,67 @@ impl Mesh {
     }
 }
 
+// Shared tail of every parse path: run topology analysis + volume/surface and
+// pack the Mesh. Both the STL parsers and analyze_positions feed through here so
+// the metrics are computed identically regardless of source format.
+fn finalize_mesh(positions: Vec<f32>, normals: Vec<f32>, triangle_count: u32, bbox_arr: [f32; 6]) -> Mesh {
+    let analysis = analyze_mesh(&positions, &bbox_arr);
+    let volume = compute_volume(&positions);
+    let surface_area = compute_surface_area(&positions);
+    Mesh {
+        positions,
+        normals,
+        triangle_count,
+        bbox: bbox_arr,
+        watertight: analysis.watertight,
+        boundary_edges: analysis.boundary_edges,
+        non_manifold_edges: analysis.non_manifold_edges,
+        degenerate_triangles: analysis.degenerate_triangles,
+        boundary_positions: analysis.boundary_positions,
+        non_manifold_positions: analysis.non_manifold_positions,
+        volume,
+        surface_area,
+    }
+}
+
+// Analyze a flat, non-indexed triangle-soup positions array (9 floats per
+// triangle) already in model space. Used by the 3MF path: three.js's
+// ThreeMFLoader handles the zip/XML/transforms client-side, then the baked
+// world-space vertices come here so 3MF gets the same volume/surface/watertight
+// /edge metrics as STL. Flat normals are recomputed per triangle.
+#[wasm_bindgen]
+pub fn analyze_positions(positions: &[f32]) -> Result<Mesh, JsValue> {
+    if positions.is_empty() || positions.len() % 9 != 0 {
+        return Err(JsValue::from_str("positions length must be a positive multiple of 9"));
+    }
+    let triangle_count = (positions.len() / 9) as u32;
+    if triangle_count > MAX_TRIANGLES {
+        return Err(JsValue::from_str("triangle count exceeds limit"));
+    }
+
+    let tcount = triangle_count as usize;
+    let mut normals = Vec::with_capacity(positions.len());
+    let mut bbox = BBox::new();
+    for t in 0..tcount {
+        let i = t * 9;
+        let vs = [
+            [positions[i], positions[i + 1], positions[i + 2]],
+            [positions[i + 3], positions[i + 4], positions[i + 5]],
+            [positions[i + 6], positions[i + 7], positions[i + 8]],
+        ];
+        let (nx, ny, nz) = compute_normal(&vs);
+        for v in &vs {
+            normals.push(nx);
+            normals.push(ny);
+            normals.push(nz);
+            bbox.add(v[0], v[1], v[2]);
+        }
+    }
+
+    let bbox_arr = bbox.to_array();
+    Ok(finalize_mesh(positions.to_vec(), normals, triangle_count, bbox_arr))
+}
+
 fn compute_surface_area(positions: &[f32]) -> f32 {
     // Sum of triangle areas: 0.5 * |(v1 - v0) x (v2 - v0)|. Accumulated in f64.
     let tcount = positions.len() / 9;
@@ -217,23 +278,7 @@ fn parse_binary(data: &[u8]) -> Result<Mesh, JsValue> {
     }
 
     let bbox_arr = bbox.to_array();
-    let analysis = analyze_mesh(&positions, &bbox_arr);
-    let volume = compute_volume(&positions);
-    let surface_area = compute_surface_area(&positions);
-    Ok(Mesh {
-        positions,
-        normals,
-        triangle_count: tri_count,
-        bbox: bbox_arr,
-        watertight: analysis.watertight,
-        boundary_edges: analysis.boundary_edges,
-        non_manifold_edges: analysis.non_manifold_edges,
-        degenerate_triangles: analysis.degenerate_triangles,
-        boundary_positions: analysis.boundary_positions,
-        non_manifold_positions: analysis.non_manifold_positions,
-        volume,
-        surface_area,
-    })
+    Ok(finalize_mesh(positions, normals, tri_count, bbox_arr))
 }
 
 fn parse_ascii(data: &[u8]) -> Result<Mesh, JsValue> {
@@ -290,23 +335,7 @@ fn parse_ascii(data: &[u8]) -> Result<Mesh, JsValue> {
     }
 
     let bbox_arr = bbox.to_array();
-    let analysis = analyze_mesh(&positions, &bbox_arr);
-    let volume = compute_volume(&positions);
-    let surface_area = compute_surface_area(&positions);
-    Ok(Mesh {
-        positions,
-        normals,
-        triangle_count,
-        bbox: bbox_arr,
-        watertight: analysis.watertight,
-        boundary_edges: analysis.boundary_edges,
-        non_manifold_edges: analysis.non_manifold_edges,
-        degenerate_triangles: analysis.degenerate_triangles,
-        boundary_positions: analysis.boundary_positions,
-        non_manifold_positions: analysis.non_manifold_positions,
-        volume,
-        surface_area,
-    })
+    Ok(finalize_mesh(positions, normals, triangle_count, bbox_arr))
 }
 
 struct Analysis {

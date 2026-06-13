@@ -326,7 +326,7 @@ async function runBackfill() {
   status.textContent = '대상 조회 중...';
   try {
     const all = await api('/api/admin/backfill/list');
-    const files = (all.files || []).filter((f) => !/\.3mf$/i.test(f.filename));
+    const files = all.files || [];
     if (!files || files.length === 0) {
       status.textContent = '업데이트할 파일이 없습니다.';
       button.disabled = false;
@@ -358,9 +358,9 @@ async function runBackfill() {
 
 async function backfillOne(f, generateThumbnail) {
   const res = await fetch(f.stlUrl, { credentials: 'same-origin' });
-  if (!res.ok) throw new Error(`STL fetch ${res.status}`);
+  if (!res.ok) throw new Error(`model fetch ${res.status}`);
   const buf = await res.arrayBuffer();
-  const { dataUrl, isWatertight, boundaryEdges, nonManifoldEdges, volume, surfaceArea } = await generateThumbnail(buf);
+  const { dataUrl, isWatertight, boundaryEdges, nonManifoldEdges, volume, surfaceArea } = await generateThumbnail(buf, f.filename);
 
   const form = new FormData();
   if (f.missingThumb) {
@@ -639,7 +639,7 @@ function renderQuoteCalc(q) {
 }
 
 function renderAdminFileCard(qid, f, hidden) {
-  const clickable = f.hasModel && /\.stl$/i.test(f.filename);
+  const clickable = f.hasModel && /\.(stl|3mf)$/i.test(f.filename);
   return `
     <div class="file-card ${clickable ? 'clickable' : ''}" data-qid="${qid}" data-fid="${f.id}" ${clickable ? 'title="클릭하여 미리보기"' : ''} ${hidden ? 'style="display:none;" data-extra' : ''}>
       ${renderWarningBadge(f)}

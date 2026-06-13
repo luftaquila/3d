@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { loadStlWasm } from './stl-wasm.js';
+import { parseModel } from './model-parse.js';
 import { estimateFilament, estimateCost } from './filament.js';
 
 let estimateConfigPromise;
@@ -35,12 +35,6 @@ function formatCm3(mm3) {
   if (cm3 < 1) return cm3.toFixed(2);
   if (cm3 < 100) return cm3.toFixed(1);
   return Math.round(cm3).toLocaleString();
-}
-
-async function parseWithWasm(buffer) {
-  const mod = await loadStlWasm();
-  const bytes = new Uint8Array(buffer);
-  return mod.parse_stl(bytes);
 }
 
 function createMeshFromWasm(mesh) {
@@ -133,10 +127,10 @@ export async function mountViewer(container, items, options = {}) {
   const parsed = [];
   for (const item of items) {
     try {
-      const mesh = await parseWithWasm(item.buffer);
+      const mesh = await parseModel(item.buffer, item.name);
       parsed.push({ name: item.name, mesh });
     } catch (err) {
-      console.warn('stl parse failed', item.name, err);
+      console.warn('model parse failed', item.name, err);
     }
   }
 
