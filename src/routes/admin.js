@@ -246,7 +246,10 @@ export default async function adminRoutes(app) {
     };
   });
 
-  app.get('/api/admin/backfill/list', { preHandler: requireAdmin }, async () => {
+  app.get('/api/admin/backfill/list', { preHandler: requireAdmin }, async (req) => {
+    // ?all=1 forces thumbnail regeneration for every model (e.g. re-render after
+    // an orientation change), not just files missing a thumbnail.
+    const force = req.query?.all === '1';
     const db = openDatabase();
     const rows = db.prepare(`
       SELECT qf.id, qf.quote_id AS quoteId, qf.filename,
@@ -274,13 +277,13 @@ export default async function adminRoutes(app) {
       const missingWatertight = r.isWatertight === null || r.isWatertight === undefined;
       const missingVolume = r.volumeMm3 === null || r.volumeMm3 === undefined;
       const missingSurface = r.surfaceAreaMm2 === null || r.surfaceAreaMm2 === undefined;
-      if (!missingThumb && !missingWatertight && !missingVolume && !missingSurface) continue;
+      if (!force && !missingThumb && !missingWatertight && !missingVolume && !missingSurface) continue;
       files.push({
         quoteId: r.quoteId,
         fileId: r.id,
         filename: r.filename,
         stlUrl: `/uploads/${r.quoteId}/${r.id}.stl`,
-        missingThumb,
+        missingThumb: force || missingThumb,
         missingWatertight,
         missingVolume,
         missingSurface,

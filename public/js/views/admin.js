@@ -120,8 +120,11 @@ async function renderSettings() {
         <div class="settings-section">
           <h3>누락 정보 일괄 갱신</h3>
           <p class="muted small" style="margin:0 0 10px;">이전에 업로드되어 썸네일·watertight·부피 정보가 없는 파일을 브라우저에서 재계산해 서버에 업데이트합니다.</p>
-          <div class="row" style="gap:8px;align-items:center;">
+          <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap;">
             <button class="btn" id="backfill-start">시작</button>
+            <label class="muted small" style="display:flex;align-items:center;gap:6px;margin:0;font-weight:normal;">
+              <input type="checkbox" id="backfill-force" style="width:auto;">기존 썸네일도 다시 생성 (방향 보정)
+            </label>
             <span class="muted small" id="backfill-status"></span>
           </div>
         </div>
@@ -322,13 +325,19 @@ function renderMemberRow(m) {
 async function runBackfill() {
   const button = document.getElementById('backfill-start');
   const status = document.getElementById('backfill-status');
+  const force = !!document.getElementById('backfill-force')?.checked;
   button.disabled = true;
   status.textContent = '대상 조회 중...';
   try {
-    const all = await api('/api/admin/backfill/list');
+    const all = await api(`/api/admin/backfill/list${force ? '?all=1' : ''}`);
     const files = all.files || [];
-    if (!files || files.length === 0) {
+    if (files.length === 0) {
       status.textContent = '업데이트할 파일이 없습니다.';
+      button.disabled = false;
+      return;
+    }
+    if (force && !confirm(`기존 썸네일 포함 ${files.length}개를 다시 생성합니다. 모델을 모두 내려받아 재계산하므로 시간이 걸릴 수 있어요. 계속할까요?`)) {
+      status.textContent = '';
       button.disabled = false;
       return;
     }
