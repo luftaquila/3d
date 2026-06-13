@@ -523,7 +523,7 @@ export default async function adminRoutes(app) {
           if (String(it.title ?? '').length > 100 || String(it.content ?? '').length > 2000) throw new Error('bad');
         }
       } catch {
-        return reply.code(400).send({ error: '출력 완료 템플릿 형식이 올바르지 않습니다.' });
+        return reply.code(400).send({ error: '메시지 템플릿 형식이 올바르지 않습니다.' });
       }
     }
     const upsert = db.prepare(`

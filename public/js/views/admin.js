@@ -88,15 +88,15 @@ async function renderSettings() {
 
         <div class="settings-section">
           <h3>SMS 메시지 프리셋</h3>
-          <p class="muted small" style="margin:0 0 10px;">치환자: <code>{amount}</code> 최종 금액, <code>{name}</code> 고객명, <code>{link}</code> 내 견적 링크.</p>
+          <p class="muted small" style="margin:0 0 10px;">치환자: <code>{amount}</code> 최종 금액, <code>{name}</code> 고객명, <code>{link}</code> 내 견적 링크, <code>{eta}</code> 진행 중인 출력의 예상 완료 시각.</p>
           ${FIXED_TEMPLATES.map((t) => renderTemplateEditor(t, tplVals(t), { withEnable: t.id === 'submit', enabled: submitOn })).join('')}
           <div style="margin-top:18px;">
-            <strong class="small">출력 완료 메시지</strong>
+            <strong class="small">메시지 템플릿</strong>
             <p class="muted small" style="margin:4px 0 8px;">필요한 만큼 추가/삭제하세요. 제목은 발송 드롭다운에 표시됩니다.</p>
             <div id="done-list"></div>
             <div class="row" style="gap:8px;margin-top:10px;">
               <button class="btn secondary" id="done-add" style="padding:4px 12px;font-size:12px;">+ 템플릿 추가</button>
-              <button class="btn" id="done-save" style="padding:4px 12px;font-size:12px;">출력 완료 저장</button>
+              <button class="btn" id="done-save" style="padding:4px 12px;font-size:12px;">템플릿 저장</button>
             </div>
           </div>
         </div>
@@ -184,7 +184,7 @@ async function renderSettings() {
     });
   });
 
-  // 출력 완료 메시지: free-form add/delete list, saved as JSON to sms_done_list.
+  // 메시지 템플릿: free-form add/delete list, saved as JSON to sms_done_list.
   let doneItems = parseDoneList(settings);
   const doneListEl = document.getElementById('done-list');
   function renderDoneRows() {
@@ -213,7 +213,7 @@ async function renderSettings() {
       await api('/api/admin/settings', { method: 'PUT', body: { sms_done_list: JSON.stringify(list) } });
       doneItems = list;
       renderDoneRows();
-      toast('출력 완료 메시지 저장됨', 'success');
+      toast('메시지 템플릿 저장됨', 'success');
     } catch (err) { toast(err.message, 'error'); }
   });
 
@@ -513,14 +513,16 @@ function readFieldRow(row) {
 
 async function renderQuotesAdmin() {
   const host = document.getElementById('quotes-panel');
-  const [{ quotes, users: allUsers }, { fields }, { settings }] = await Promise.all([
+  const [{ quotes, users: allUsers }, { fields }, { settings }, printStatus] = await Promise.all([
     api('/api/admin/quotes'),
     api('/api/form-fields'),
     api('/api/admin/settings'),
+    api('/api/camera/print-status').catch(() => null),
   ]);
   loadSmsTemplates(settings);
   smsSubmitEnabled = settings.sms_submit_enabled === '1';
   estPricePerM = Number(settings.est_price_per_m) || 500;
+  printEtaText = computeEtaText(printStatus);
   const fieldMap = new Map(fields.map((f) => [f.id, f]));
 
   const users = allUsers.sort((a, b) => a.email.localeCompare(b.email));
@@ -782,8 +784,9 @@ let smsTemplates = {};        // id -> { label, content }
 let smsTemplateOrder = [];    // ordered ids for the send dropdown
 let smsSubmitEnabled = false; // when auto-send is on, hide 견적 접수 from the manual dropdown
 let estPricePerM = 500;       // filament price per meter; loaded from settings
+let printEtaText = '';        // in-progress print ETA "DD일 h:mm AM/PM" for {eta}; '' when idle
 
-// 출력 완료 templates are a free-form list (title + content) stored as JSON in
+// Message templates are a free-form list (title + content) stored as JSON in
 // settings.sms_done_list. Falls back to migrating the legacy fixed slots.
 function parseDoneList(settings) {
   try {
@@ -793,7 +796,7 @@ function parseDoneList(settings) {
   const legacy = [];
   for (let i = 1; i <= 3; i++) {
     const c = settings[`sms_done${i}_template`];
-    if (c && c.trim()) legacy.push({ title: `출력 완료 ${i}`, content: c });
+    if (c && c.trim()) legacy.push({ title: `메시지 ${i}`, content: c });
   }
   return legacy;
 }
@@ -808,9 +811,26 @@ function loadSmsTemplates(settings) {
   }
   parseDoneList(settings).forEach((d, i) => {
     const id = `done${i}`;
-    smsTemplates[id] = { label: d.title || `출력 완료 ${i + 1}`, content: d.content };
+    smsTemplates[id] = { label: d.title || `메시지 ${i + 1}`, content: d.content };
     smsTemplateOrder.push(id);
   });
+}
+
+// {eta} fills the in-progress print's estimated finish time, snapshotted at page
+// load as an absolute wall-clock (so it doesn't drift); '' when no print is running.
+function formatEta(date) {
+  const day = String(date.getDate()).padStart(2, '0');
+  let h = date.getHours();
+  const ampm = h < 12 ? 'AM' : 'PM';
+  h = h % 12 || 12;
+  const mm = String(date.getMinutes()).padStart(2, '0');
+  return `${day}일 ${h}:${mm} ${ampm}`;
+}
+function computeEtaText(status) {
+  if (!status?.enabled || !status.available) return '';
+  const rem = status.remainingMin;
+  if (!Number.isFinite(rem) || rem <= 0) return '';
+  return formatEta(new Date(Date.now() + rem * 60000));
 }
 
 function substitutePlaceholders(text, d) {
@@ -818,7 +838,8 @@ function substitutePlaceholders(text, d) {
   return String(text || '')
     .split('{amount}').join(amount != null ? fmtWon(amount) : '')
     .split('{name}').join(d.name || '')
-    .split('{link}').join(`${location.origin}/my`);
+    .split('{link}').join(`${location.origin}/my`)
+    .split('{eta}').join(printEtaText);
 }
 
 function readCalcInputs(calcEl) {
