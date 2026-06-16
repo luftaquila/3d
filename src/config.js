@@ -35,6 +35,15 @@ export const config = {
     serviceId: optional('SENS_SERVICE_ID', ''),
     fromNumber: optional('SENS_FROM_NUMBER', ''),
   },
+  bizMessage: {
+    // Naver Cloud Biz Message — KakaoTalk AlimTalk. Reuses the SENS IAM keys
+    // (accessKey/secretKey) and sender number (failover) from `sens` above; only
+    // the service ID and sender channel differ. plusFriendId is the channel's
+    // @search id registered as a Biz Message 발신프로필. AlimTalk also requires
+    // Kakao-approved templates (templateCode) — registered in settings.alimtalk_templates.
+    serviceId: optional('BIZ_MESSAGE_SERVICE_ID', ''),
+    plusFriendId: optional('KAKAO_PLUS_FRIEND_ID', ''),
+  },
   homeassistant: {
     url: optional('HA_URL', ''),
     token: optional('HA_TOKEN', ''),

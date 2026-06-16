@@ -56,7 +56,10 @@ function renderTemplateEditor(t, vals, opts = {}) {
 
 async function renderSettings() {
   const host = document.getElementById('settings-panel');
-  const { settings } = await api('/api/admin/settings');
+  const res = await api('/api/admin/settings');
+  const settings = res.settings;
+  const caps = res.capabilities || {};
+  const sendModeVal = settings.send_mode === 'failover' ? 'failover' : 'manual';
   const cameraOn = settings.camera_enabled === '1';
   const camStatusOn = settings.camera_status_enabled === '1';
   const homeHtml = settings.home_html ?? '';
@@ -97,6 +100,31 @@ async function renderSettings() {
             <div class="row" style="gap:8px;margin-top:10px;">
               <button class="btn secondary" id="done-add" style="padding:4px 12px;font-size:12px;">+ 템플릿 추가</button>
               <button class="btn" id="done-save" style="padding:4px 12px;font-size:12px;">템플릿 저장</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <h3>발송 모드 (문자 / 알림톡)</h3>
+          <p class="muted small" style="margin:0 0 8px;">${caps.alimtalk
+            ? `알림톡 발신 채널: <code>${escapeHtml(caps.plusFriendId || '(미설정)')}</code>`
+            : '알림톡 미설정 — 서버 env(BIZ_MESSAGE_SERVICE_ID·KAKAO_PLUS_FRIEND_ID) + SENS 키가 필요합니다.'}</p>
+          <label style="display:flex;align-items:center;gap:8px;margin-top:4px;">
+            <input type="radio" name="send-mode" value="manual" ${sendModeVal !== 'failover' ? 'checked' : ''} style="width:auto;">
+            모드2 — 발송 시 문자/알림톡 수동 선택
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;margin-top:4px;">
+            <input type="radio" name="send-mode" value="failover" ${sendModeVal === 'failover' ? 'checked' : ''} style="width:auto;">
+            모드1 — 알림톡 우선 + 실패 시 문자 자동
+          </label>
+
+          <div style="margin-top:18px;">
+            <strong class="small">알림톡 템플릿 (카카오 승인 필수)</strong>
+            <p class="muted small" style="margin:4px 0 8px;">NCP 콘솔에서 승인받은 템플릿을 등록하세요. 코드=templateCode, 본문=승인된 내용. 치환자 <code>{amount}</code>/<code>{name}</code>/<code>{link}</code>/<code>{eta}</code>는 발송 시 치환되며, 치환된 본문이 승인 내용과 정확히 일치해야 발송됩니다.</p>
+            <div id="alim-list"></div>
+            <div class="row" style="gap:8px;margin-top:10px;">
+              <button class="btn secondary" id="alim-add" style="padding:4px 12px;font-size:12px;">+ 알림톡 템플릿 추가</button>
+              <button class="btn" id="alim-save" style="padding:4px 12px;font-size:12px;">알림톡 템플릿 저장</button>
             </div>
           </div>
         </div>
@@ -217,6 +245,52 @@ async function renderSettings() {
     } catch (err) { toast(err.message, 'error'); }
   });
 
+  // 발송 모드 (문자/알림톡) 라디오 — 변경 즉시 저장
+  host.querySelectorAll('input[name="send-mode"]').forEach((r) => {
+    r.addEventListener('change', async (e) => {
+      if (!e.target.checked) return;
+      try {
+        await api('/api/admin/settings', { method: 'PUT', body: { send_mode: e.target.value } });
+        toast('발송 모드 저장됨', 'success');
+      } catch (err) { toast(err.message, 'error'); }
+    });
+  });
+
+  // 알림톡 템플릿 registry (code + name + content) → alimtalk_templates JSON.
+  let alimItems = parseAlimList(settings);
+  const alimListEl = document.getElementById('alim-list');
+  function renderAlimRows() {
+    alimListEl.innerHTML = alimItems.length
+      ? alimItems.map(renderAlimRow).join('')
+      : '<p class="muted small">등록된 알림톡 템플릿이 없습니다.</p>';
+    [...alimListEl.querySelectorAll('.alim-row')].forEach((row, idx) => {
+      const codeEl = row.querySelector('.alim-code');
+      const nameEl = row.querySelector('.alim-name');
+      const contentEl = row.querySelector('.alim-content');
+      const countEl = row.querySelector('.alim-count');
+      const upd = () => { countEl.textContent = `${contentEl.value.length}자 / 1000`; };
+      upd();
+      codeEl.addEventListener('input', () => { alimItems[idx].code = codeEl.value; });
+      nameEl.addEventListener('input', () => { alimItems[idx].name = nameEl.value; });
+      contentEl.addEventListener('input', () => { alimItems[idx].content = contentEl.value; upd(); });
+      row.querySelector('.alim-del').addEventListener('click', () => { alimItems.splice(idx, 1); renderAlimRows(); });
+    });
+  }
+  renderAlimRows();
+  document.getElementById('alim-add').addEventListener('click', () => {
+    alimItems.push({ code: '', name: '', content: '' });
+    renderAlimRows();
+  });
+  document.getElementById('alim-save').addEventListener('click', async () => {
+    const list = alimItems.filter((it) => (it.code || '').trim() && (it.content || '').trim());
+    try {
+      await api('/api/admin/settings', { method: 'PUT', body: { alimtalk_templates: JSON.stringify(list) } });
+      alimItems = list;
+      renderAlimRows();
+      toast('알림톡 템플릿 저장됨', 'success');
+    } catch (err) { toast(err.message, 'error'); }
+  });
+
   document.getElementById('backfill-start').addEventListener('click', runBackfill);
   renderFieldsAdmin();
 }
@@ -229,6 +303,22 @@ function renderDoneRow(item) {
       <div class="row" style="justify-content:space-between;align-items:center;gap:8px;margin-top:4px;">
         <span class="muted small done-count"></span>
         <button class="btn danger done-del" style="padding:2px 10px;font-size:11px;">삭제</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderAlimRow(item) {
+  return `
+    <div class="alim-row" style="border:1px solid var(--border, #ddd);border-radius:6px;padding:8px;margin-bottom:8px;">
+      <div class="row" style="gap:8px;">
+        <input type="text" class="alim-code" placeholder="templateCode" value="${escapeAttr(item.code)}" style="flex:1;">
+        <input type="text" class="alim-name" placeholder="표시 이름 (드롭다운)" value="${escapeAttr(item.name)}" style="flex:1;">
+      </div>
+      <textarea class="alim-content" rows="3" placeholder="승인된 알림톡 본문 ({amount}/{name}/{link}/{eta} 치환)" style="font-family:var(--font-mono);font-size:13px;margin-top:6px;">${escapeHtml(item.content)}</textarea>
+      <div class="row" style="justify-content:space-between;align-items:center;gap:8px;margin-top:4px;">
+        <span class="muted small alim-count"></span>
+        <button class="btn danger alim-del" style="padding:2px 10px;font-size:11px;">삭제</button>
       </div>
     </div>
   `;
@@ -513,12 +603,16 @@ function readFieldRow(row) {
 
 async function renderQuotesAdmin() {
   const host = document.getElementById('quotes-panel');
-  const [{ quotes, users: allUsers }, { fields }, { settings }] = await Promise.all([
+  const [{ quotes, users: allUsers }, { fields }, settingsRes] = await Promise.all([
     api('/api/admin/quotes'),
     api('/api/form-fields'),
     api('/api/admin/settings'),
   ]);
-  loadSmsTemplates(settings);
+  const { settings } = settingsRes;
+  const caps = settingsRes.capabilities || {};
+  alimtalkAvailable = !!caps.alimtalk;
+  sendMode = settings.send_mode === 'failover' ? 'failover' : 'manual';
+  loadSmsTemplates(settings, caps);
   smsSubmitEnabled = settings.sms_submit_enabled === '1';
   estPricePerM = Number(settings.est_price_per_m) || 500;
   const fieldMap = new Map(fields.map((f) => [f.id, f]));
@@ -634,13 +728,16 @@ function renderQuoteCalc(q) {
       </div>
       <div class="quote-sms">
         <div class="row" style="justify-content:space-between;align-items:center;gap:8px;">
-          <strong class="small">SMS 발송</strong>
+          <strong class="small">메시지 발송</strong>
           <select class="sms-tpl-select" data-qid="${q.id}" style="max-width:55%;"></select>
         </div>
-        <textarea class="sms-text" data-qid="${q.id}" rows="5" placeholder="고객에게 보낼 문자 내용" style="margin-top:4px;"></textarea>
+        <textarea class="sms-text" data-qid="${q.id}" rows="5" placeholder="고객에게 보낼 내용" style="margin-top:4px;"></textarea>
         <div class="row" style="justify-content:space-between;align-items:center;gap:8px;">
           <span class="muted small sms-count" data-qid="${q.id}"></span>
-          <button class="btn accent sms-send" data-qid="${q.id}" style="padding:4px 12px;font-size:12px;">SMS 전송</button>
+          <label class="muted small sms-failover-wrap" style="display:none;align-items:center;gap:6px;margin:0;font-weight:normal;">
+            <input type="checkbox" class="sms-failover" style="width:auto;"> 실패 시 문자
+          </label>
+          <button class="btn accent sms-send" data-qid="${q.id}" style="padding:4px 12px;font-size:12px;">전송</button>
         </div>
       </div>
     </div>
@@ -783,6 +880,8 @@ let smsTemplateOrder = [];    // ordered ids for the send dropdown
 let smsSubmitEnabled = false; // when auto-send is on, hide 견적 접수 from the manual dropdown
 let estPricePerM = 500;       // filament price per meter; loaded from settings
 let printEtaText = '';        // in-progress print ETA "DD일 HH:MM" (24h) for {eta}; '' when idle
+let alimtalkAvailable = false; // AlimTalk (Biz Message) configured server-side
+let sendMode = 'manual';       // 'manual' (수동 선택) | 'failover' (알림톡 우선 + 실패 시 문자)
 
 // Message templates are a free-form list (title + content) stored as JSON in
 // settings.sms_done_list. Falls back to migrating the legacy fixed slots.
@@ -799,19 +898,41 @@ function parseDoneList(settings) {
   return legacy;
 }
 
-function loadSmsTemplates(settings) {
+// AlimTalk template registry: [{ code, name, content }] stored as JSON in
+// settings.alimtalk_templates. code = Kakao-approved templateCode.
+function parseAlimList(settings) {
+  try {
+    const arr = JSON.parse(settings.alimtalk_templates || '[]');
+    if (Array.isArray(arr)) {
+      return arr.map((x) => ({ code: String(x?.code || ''), name: String(x?.name || ''), content: String(x?.content || '') }));
+    }
+  } catch { /* ignore malformed */ }
+  return [];
+}
+
+function loadSmsTemplates(settings, caps = {}) {
   smsTemplates = {};
   smsTemplateOrder = [];
   for (const t of FIXED_TEMPLATES) {
     const content = settings[t.contentKey] || (t.id === 'quote' ? DEFAULT_QUOTE_TEMPLATE : '');
-    smsTemplates[t.id] = { label: t.label, content };
+    smsTemplates[t.id] = { label: t.label, content, channel: 'sms' };
     smsTemplateOrder.push(t.id);
   }
   parseDoneList(settings).forEach((d, i) => {
     const id = `done${i}`;
-    smsTemplates[id] = { label: d.title || `메시지 ${i + 1}`, content: d.content };
+    smsTemplates[id] = { label: d.title || `메시지 ${i + 1}`, content: d.content, channel: 'sms' };
     smsTemplateOrder.push(id);
   });
+  // AlimTalk templates appear in the same dropdown, prefixed [알림톡], only when
+  // Biz Message is configured. Selecting one routes the send via AlimTalk.
+  if (caps.alimtalk) {
+    parseAlimList(settings).forEach((d, i) => {
+      if (!String(d.content || '').trim() || !String(d.code || '').trim()) return;
+      const id = `at${i}`;
+      smsTemplates[id] = { label: `[알림톡] ${d.name || `템플릿 ${i + 1}`}`, content: d.content, channel: 'alimtalk', code: d.code };
+      smsTemplateOrder.push(id);
+    });
+  }
 }
 
 // {eta} fills the in-progress print's estimated finish time as an absolute
@@ -872,6 +993,8 @@ function wireQuoteCalc(q) {
 
   const smsText = calcEl.querySelector('.sms-text');
   const selectEl = calcEl.querySelector('.sms-tpl-select');
+  const failoverWrap = calcEl.querySelector('.sms-failover-wrap');
+  const failoverCb = calcEl.querySelector('.sms-failover');
   const mEl = calcEl.querySelector('[data-calc="filamentM"]');
   const costEl = calcEl.querySelector('[data-calc="cost"]');
   const discountEl = calcEl.querySelector('[data-calc="discount"]');
@@ -885,22 +1008,39 @@ function wireQuoteCalc(q) {
     return (smsTemplates[id]?.content || '').trim();
   });
   selectEl.innerHTML = available.map((id) => `<option value="${id}">${escapeHtml(smsTemplates[id].label)}</option>`).join('');
-  let selectedId = available.includes('quote') ? 'quote' : (available[0] || null);
+  // In failover mode default to the first AlimTalk template (알림톡 우선); otherwise 견적 안내.
+  const firstAlim = available.find((id) => smsTemplates[id]?.channel === 'alimtalk');
+  let selectedId = (sendMode === 'failover' && firstAlim) ? firstAlim
+    : (available.includes('quote') ? 'quote' : (available[0] || null));
   if (selectedId) selectEl.value = selectedId;
   if (available.length === 0) selectEl.style.display = 'none';
+  if (failoverCb) failoverCb.checked = sendMode === 'failover';
 
   // Pre-rounding cost basis. Filament m sets it to m×단가; a manual cost edit
   // sets it to the typed cost. Final = floor100(basis × (1 − discount%)).
   let rawBasis = hasNum(costEl.value) ? Number(costEl.value)
     : (hasNum(mEl.value) ? Number(mEl.value) * estPricePerM : null);
 
-  // SMS subject+body reflect the selected template, substituted with calc values.
+  // Counter + channel UI: AlimTalk shows a char count (no SMS/LMS byte rule) and
+  // reveals the failover checkbox; SMS shows the byte/SMS-LMS label.
+  function refreshCountAndChannel() {
+    const tpl = selectedId ? smsTemplates[selectedId] : null;
+    const isAt = tpl?.channel === 'alimtalk';
+    if (failoverWrap) failoverWrap.style.display = isAt ? 'inline-flex' : 'none';
+    const countEl = calcEl.querySelector('.sms-count');
+    if (!countEl) return;
+    countEl.textContent = isAt
+      ? `${smsText.value.length}자 · 알림톡${failoverCb && failoverCb.checked ? ' (+문자 대체)' : ''}`
+      : smsCountLabel(smsText.value);
+  }
+
+  // SMS/AlimTalk body reflects the selected template, substituted with calc values.
   function refreshSms() {
     const tpl = selectedId ? smsTemplates[selectedId] : null;
     if (tpl) {
       smsText.value = substitutePlaceholders(tpl.content, { name: q.name, ...readCalcInputs(calcEl) });
     }
-    updateSmsCount(calcEl);
+    refreshCountAndChannel();
   }
   selectEl.addEventListener('change', async () => {
     selectedId = selectEl.value;
@@ -929,7 +1069,8 @@ function wireQuoteCalc(q) {
   // 할인율 편집 → 최종 자동
   discountEl.addEventListener('input', applyFinal);
   finalEl.addEventListener('input', refreshSms);
-  smsText.addEventListener('input', () => updateSmsCount(calcEl));
+  smsText.addEventListener('input', refreshCountAndChannel);
+  if (failoverCb) failoverCb.addEventListener('change', refreshCountAndChannel);
 
   refreshSms(); // initial SMS body from rendered values (don't overwrite stored final)
 
@@ -947,9 +1088,13 @@ function wireQuoteCalc(q) {
   });
 
   calcEl.querySelector('.sms-send')?.addEventListener('click', async (e) => {
+    const tpl = selectedId ? smsTemplates[selectedId] : null;
+    const channel = tpl?.channel === 'alimtalk' ? 'alimtalk' : 'sms';
     const message = smsText.value.trim();
     if (!message) return toast('메시지를 입력해주세요.', 'error');
-    if (!confirm(`${q.phone} 번호로 SMS를 전송합니다. 계속할까요?`)) return;
+    if (channel === 'alimtalk' && !tpl.code) return toast('알림톡 템플릿 코드가 없습니다.', 'error');
+    const channelLabel = channel === 'alimtalk' ? '알림톡' : '문자';
+    if (!confirm(`${q.phone} 번호로 ${channelLabel}을(를) 전송합니다. 계속할까요?`)) return;
     const btn = e.currentTarget;
     btn.disabled = true;
     try {
@@ -957,10 +1102,12 @@ function wireQuoteCalc(q) {
         method: 'POST',
         body: {
           message,
-          kind: selectedId ? smsTemplates[selectedId].label : '수동',
+          kind: tpl ? tpl.label : '수동',
+          channel,
+          ...(channel === 'alimtalk' ? { templateCode: tpl.code, failover: !!(failoverCb && failoverCb.checked) } : {}),
         },
       });
-      toast('SMS를 전송했습니다.', 'success');
+      toast(`${channelLabel}을(를) 전송했습니다.`, 'success');
     } catch (err) {
       toast(`전송 실패: ${err.message}`, 'error');
     } finally {
