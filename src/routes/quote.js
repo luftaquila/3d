@@ -300,12 +300,47 @@ export default async function quoteRoutes(app) {
       return reply.code(413).send({ error: '사용자 업로드 용량 한도를 초과했습니다.' });
     }
 
+    // Resolve form-field labels for the answers and the estimate config so the
+    // admin notification carries the full submission, not just a file count.
+    const fieldRows = db.prepare('SELECT id, label, type FROM form_fields ORDER BY display_order').all();
+    const answerList = [];
+    for (const f of fieldRows) {
+      const raw = filteredAnswers[f.id];
+      if (raw == null) continue;
+      if (f.type === 'checkbox') {
+        // Checkbox submits '1'/'0'. Show only when checked, and as a readable "예".
+        if (raw === '1') answerList.push({ label: f.label, value: '예' });
+        continue;
+      }
+      const v = String(raw).trim();
+      if (v) answerList.push({ label: f.label, value: v });
+    }
+    const estRows = db.prepare("SELECT key, value FROM settings WHERE key IN ('est_wall_mm','est_infill_pct','est_price_per_m')").all();
+    const estMap = {};
+    for (const r of estRows) estMap[r.key] = Number(r.value);
+    const estimateConfig = {
+      wallMm: Number.isFinite(estMap.est_wall_mm) ? estMap.est_wall_mm : 1.0,
+      infillPct: Number.isFinite(estMap.est_infill_pct) ? estMap.est_infill_pct : 15,
+      pricePerM: Number.isFinite(estMap.est_price_per_m) ? estMap.est_price_per_m : 500,
+    };
+
     sendQuoteNotification(req.log, {
       quoteId,
       userEmail: req.auth.email,
       phone,
       name,
       fileCount: acceptedFiles.length,
+      createdAt: now,
+      files: acceptedFiles.map((f) => ({
+        filename: f.filename,
+        size: f.size,
+        triangleCount: f.triangleCount,
+        isWatertight: f.isWatertight,
+        volumeMm3: f.volumeMm3,
+        surfaceAreaMm2: f.surfaceAreaMm2,
+      })),
+      answers: answerList,
+      estimateConfig,
     }).catch(() => {});
 
     // Optional auto-SMS to the customer on submit (admin-configurable preset).
