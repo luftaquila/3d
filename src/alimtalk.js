@@ -1,14 +1,13 @@
 import crypto from 'node:crypto';
 import { config } from './config.js';
-import { smsByteLength } from './sens.js';
 
 // Naver Cloud Biz Message — KakaoTalk AlimTalk v2. Same API gateway and HMAC
 // signing as SENS SMS (see sens.js); only the path and payload differ. AlimTalk
 // can ONLY send Kakao-approved templates: `content` must match the approved
-// template body (with #{variables} filled). Optional failover re-sends as
-// SMS/LMS via the SENS sender number when AlimTalk delivery fails.
+// template body (with #{variables} filled). SMS vs AlimTalk is an explicit
+// per-send choice — no failover here; control SMS fallback (if any) in the NCP
+// Biz Message console.
 const HOST = 'https://sens.apigw.ntruss.com';
-const SMS_MAX_BYTES = 90;
 
 export function alimtalkConfigured() {
   const { accessKey, secretKey } = config.sens;
@@ -23,9 +22,8 @@ function sign(timestamp, path) {
 
 // Send one AlimTalk message. Returns { ok, status, data }; never throws on a
 // non-2xx response. content must match the approved template identified by
-// templateCode. When failover is true, NCP falls back to SMS/LMS (chosen by
-// byte length) using the SENS sender number on delivery failure.
-export async function sendAlimtalk(log, { to, templateCode, content, buttons, failover, failoverContent }) {
+// templateCode.
+export async function sendAlimtalk(log, { to, templateCode, content, buttons }) {
   if (!alimtalkConfigured()) {
     return { ok: false, status: 0, data: 'AlimTalk not configured' };
   }
@@ -40,16 +38,6 @@ export async function sendAlimtalk(log, { to, templateCode, content, buttons, fa
 
   const message = { to: digits, content: body };
   if (Array.isArray(buttons) && buttons.length) message.buttons = buttons;
-  if (failover && config.sens.fromNumber) {
-    const fb = String(failoverContent ?? body);
-    const isLms = smsByteLength(fb) > SMS_MAX_BYTES;
-    message.failoverConfig = {
-      type: isLms ? 'LMS' : 'SMS',
-      from: config.sens.fromNumber,
-      content: fb,
-    };
-    if (isLms) message.failoverConfig.subject = '3D 프린팅 견적';
-  }
 
   const payload = {
     plusFriendId: config.bizMessage.plusFriendId,

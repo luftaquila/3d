@@ -202,8 +202,7 @@ export default async function adminRoutes(app) {
       if (!alimtalkConfigured()) return reply.code(400).send({ error: '알림톡이 설정되지 않았습니다.' });
       const templateCode = typeof req.body?.templateCode === 'string' ? req.body.templateCode.trim() : '';
       if (!templateCode) return reply.code(400).send({ error: '알림톡 템플릿을 선택해주세요.' });
-      const failover = req.body?.failover === true || req.body?.failover === '1';
-      result = await sendAlimtalk(req.log, { to: digits, templateCode, content: message, failover });
+      result = await sendAlimtalk(req.log, { to: digits, templateCode, content: message });
       msgType = '알림톡';
     } else {
       if (!sensConfigured()) return reply.code(400).send({ error: 'SMS가 설정되지 않았습니다.' });
@@ -526,7 +525,7 @@ export default async function adminRoutes(app) {
     const allowed = new Set([
       'camera_enabled', 'camera_status_enabled', 'home_html', 'est_wall_mm', 'est_infill_pct', 'est_price_per_m',
       'sms_template', 'sms_submit_enabled', 'sms_submit_template', 'sms_done_list',
-      'send_mode', 'alimtalk_templates',
+      'alimtalk_templates',
     ]);
     const numericKeys = new Set(['est_wall_mm', 'est_infill_pct', 'est_price_per_m']);
     for (const [k, v] of Object.entries(body)) {
@@ -546,9 +545,6 @@ export default async function adminRoutes(app) {
       } catch {
         return reply.code(400).send({ error: '메시지 템플릿 형식이 올바르지 않습니다.' });
       }
-    }
-    if (body.send_mode !== undefined && !['manual', 'failover'].includes(String(body.send_mode))) {
-      return reply.code(400).send({ error: '잘못된 발송 모드입니다.' });
     }
     if (body.alimtalk_templates !== undefined) {
       try {
