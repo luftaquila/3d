@@ -1,4 +1,4 @@
-import { api } from './api.js';
+import { api, loginRedirect } from './api.js';
 import { renderHome } from './views/home.js';
 import { renderMy } from './views/my.js';
 import { renderAdmin } from './views/admin.js';
@@ -92,6 +92,11 @@ function updateHeader() {
     btn.href = `/oauth2/login?return_to=${encodeURIComponent(location.pathname + location.hash)}`;
     btn.className = 'google-signin';
     btn.innerHTML = `${GOOGLE_ICON_SVG}<span>Google 로그인</span>`;
+    // Route through loginRedirect so the KakaoTalk in-app bypass applies.
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      loginRedirect(location.pathname + location.hash);
+    });
     sessionArea.appendChild(btn);
   }
   const adminLink = document.querySelector('.admin-link');

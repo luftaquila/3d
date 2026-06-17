@@ -5,6 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="same-origin">
 
+  <!-- KakaoTalk in-app browser bounce: its WebView blocks Google OAuth
+       ("disallowed_useragent"), so pop every page out to the real browser.
+       Runs before anything else (incl. analytics) loads. -->
+  <script>
+    (function () {
+      if (/kakaotalk/i.test(navigator.userAgent)) {
+        location.href = 'kakaotalk://web/openExternal?url=' + encodeURIComponent(location.href);
+      }
+    })();
+  </script>
+
   <!-- Google tag (gtag.js) -->
   <script async src="https://www.googletagmanager.com/gtag/js?id=G-NQ00ZJZQY1"></script>
   <script>

@@ -37,7 +37,15 @@ export function toast(msg, kind = 'info') {
 }
 
 export function loginRedirect(returnTo = location.pathname) {
-  location.href = `/oauth2/login?return_to=${encodeURIComponent(returnTo)}`;
+  const loginUrl = `/oauth2/login?return_to=${encodeURIComponent(returnTo)}`;
+  // KakaoTalk's in-app browser is a WebView; Google blocks OAuth there
+  // ("disallowed_useragent"). Open the login flow in the external browser
+  // instead of redirecting in-place, so the consent screen actually loads.
+  if (/kakaotalk/i.test(navigator.userAgent)) {
+    location.href = `kakaotalk://web/openExternal?url=${encodeURIComponent(new URL(loginUrl, location.origin).href)}`;
+    return;
+  }
+  location.href = loginUrl;
 }
 
 export function fmtBytes(n) {
