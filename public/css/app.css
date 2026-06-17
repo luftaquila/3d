@@ -668,6 +668,20 @@ input:focus, textarea:focus, select:focus {
   min-height: 96px;
   font-family: var(--font-mono);
 }
+/* 채널(문자/알림톡)·템플릿 드롭다운: 전역 select{width:100%} 때문에 .row 안에서
+   각자 100%를 차지해 줄바꿈(위아래로) 됐다. 내용 너비만 차지해 한 줄에 나란히. */
+.quote-sms .sms-channel,
+.quote-sms .sms-tpl-select {
+  width: auto;
+  min-width: 0;
+  flex: 0 1 auto;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+.quote-sms .sms-tpl-select {
+  max-width: 200px;
+  text-overflow: ellipsis;
+}
 
 /* Customer-facing quote summary (필라멘트/비용/코멘트) */
 .quote-summary {

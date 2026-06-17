@@ -522,16 +522,18 @@ function readFieldRow(row) {
 
 async function renderQuotesAdmin() {
   const host = document.getElementById('quotes-panel');
-  const [{ quotes, users: allUsers }, { fields }, settingsRes, alimRes] = await Promise.all([
+  // AlimTalk 템플릿은 외부 NCP API(템플릿당 추가 호출, N+1)라 느리고 간헐적이다.
+  // 견적 목록 렌더를 여기에 묶지 말 것 — 빠른 로컬 데이터만 기다려 먼저 그리고,
+  // 알림톡은 백그라운드로 받아 채널 옵션을 나중에 끼워 넣는다.
+  const [{ quotes, users: allUsers }, { fields }, settingsRes] = await Promise.all([
     api('/api/admin/quotes'),
     api('/api/form-fields'),
     api('/api/admin/settings'),
-    api('/api/admin/alimtalk-templates').catch(() => ({ configured: false, templates: [] })),
   ]);
   const { settings } = settingsRes;
-  alimtalkAvailable = !!(alimRes && alimRes.configured);
+  alimtalkAvailable = false;
+  loadAlimTemplates([]);
   loadSmsTemplates(settings);
-  loadAlimTemplates(alimRes && alimRes.templates);
   smsSubmitEnabled = settings.sms_submit_enabled === '1';
   estPricePerM = Number(settings.est_price_per_m) || 500;
   const fieldMap = new Map(fields.map((f) => [f.id, f]));
@@ -577,6 +579,29 @@ async function renderQuotesAdmin() {
   searchEl.addEventListener('input', applyFilters);
   userEl.addEventListener('change', applyFilters);
   applyFilters();
+
+  // 느린 외부(NCP) 호출은 목록을 다 그린 뒤 백그라운드로. 도착하면 이미 그려진
+  // 각 행의 채널 셀렉터에 알림톡 옵션만 끼워 넣는다(편집 중인 입력은 건드리지 않음).
+  // 이후 검색/필터로 다시 그려지는 행은 wireQuoteCalc가 전역값을 읽어 자동 포함.
+  api('/api/admin/alimtalk-templates').then((alimRes) => {
+    alimtalkAvailable = !!(alimRes && alimRes.configured);
+    loadAlimTemplates(alimRes && alimRes.templates);
+    enableAlimtalkChannel();
+  }).catch(() => { /* 알림톡 미구성/일시 오류 — 문자만으로 동작 */ });
+}
+
+// 백그라운드로 알림톡 템플릿이 도착했을 때, 이미 렌더된 채널 셀렉터에 알림톡
+// 옵션을 추가하고 노출한다. 전체 재렌더 대신 surgical 추가라 진행 중 편집 보존.
+function enableAlimtalkChannel() {
+  if (!alimtalkAvailable || !alimTemplateOrder.length) return;
+  document.querySelectorAll('.quote-sms .sms-channel').forEach((sel) => {
+    if ([...sel.options].some((o) => o.value === 'alimtalk')) return;
+    const opt = document.createElement('option');
+    opt.value = 'alimtalk';
+    opt.textContent = '알림톡';
+    sel.appendChild(opt);
+    sel.style.display = '';
+  });
 }
 
 function renderAdminQuote(q, fieldMap) {
