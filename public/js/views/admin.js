@@ -90,7 +90,7 @@ async function renderSettings() {
 
         <div class="settings-section">
           <h3>SMS 메시지 프리셋</h3>
-          <p class="muted small" style="margin:0 0 10px;">치환자: <code>{amount}</code> 최종 금액, <code>{name}</code> 고객명, <code>{link}</code> 내 견적 링크, <code>{eta}</code> 진행 중인 출력의 예상 완료 시각.</p>
+          <p class="muted small" style="margin:0 0 10px;">치환자: <code>{amount}</code> 최종 금액, <code>{name}</code> 고객명, <code>{link}</code> 내 견적 링크, <code>{comment}</code> 견적 코멘트, <code>{eta}</code> 진행 중인 출력의 예상 완료 시각.</p>
           ${FIXED_TEMPLATES.map((t) => renderTemplateEditor(t, tplVals(t), { withEnable: t.id === 'submit', enabled: submitOn })).join('')}
           <div style="margin-top:18px;">
             <strong class="small">메시지 템플릿</strong>
@@ -108,7 +108,7 @@ async function renderSettings() {
           <p class="muted small" style="margin:0 0 8px;">${caps.alimtalk
             ? `발신 채널: <code>${escapeHtml(caps.plusFriendId || '(미설정)')}</code> · 발송 시 문자/알림톡을 선택합니다.`
             : '알림톡 미설정 — 서버 env(BIZ_MESSAGE_SERVICE_ID·KAKAO_PLUS_FRIEND_ID) + SENS 키가 필요합니다.'}</p>
-          <p class="muted small" style="margin:0 0 8px;">카카오 승인 템플릿을 등록하세요(문자 프리셋과 별개의 세트). 코드=templateCode, 본문=승인된 내용. 치환자 <code>{amount}</code>/<code>{name}</code>/<code>{link}</code>/<code>{eta}</code>는 발송 시 치환되며, 치환된 본문이 승인 내용과 정확히 일치해야 발송됩니다.</p>
+          <p class="muted small" style="margin:0 0 8px;">카카오 승인 템플릿을 등록하세요(문자 프리셋과 별개의 세트). 코드=templateCode, 본문=승인된 내용. 치환자 <code>{amount}</code>/<code>{name}</code>/<code>{link}</code>/<code>{comment}</code>/<code>{eta}</code>는 발송 시 치환되며, 치환된 본문이 승인 내용과 정확히 일치해야 발송됩니다.</p>
           <div id="alim-list"></div>
           <div class="row" style="gap:8px;margin-top:10px;">
             <button class="btn secondary" id="alim-add" style="padding:4px 12px;font-size:12px;">+ 알림톡 템플릿 추가</button>
@@ -945,6 +945,7 @@ function substitutePlaceholders(text, d) {
     .split('{amount}').join(amount != null ? fmtWon(amount) : '')
     .split('{name}').join(d.name || '')
     .split('{link}').join(`${location.origin}/my`)
+    .split('{comment}').join(d.comment || '')
     .split('{eta}').join(printEtaText);
 }
 
