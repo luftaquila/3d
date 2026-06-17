@@ -6,7 +6,21 @@ import { openDatabase, recordSmsLog } from '../db.js';
 import { config } from '../config.js';
 import { isUlid, maskPhone } from '../log-utils.js';
 import { sendSms, sensConfigured, smsByteLength } from '../sens.js';
-import { sendAlimtalk, alimtalkConfigured } from '../alimtalk.js';
+import { sendAlimtalk, alimtalkConfigured, listAlimtalkTemplates } from '../alimtalk.js';
+
+// AlimTalk templates are pulled live from NCP (channel-registered), cached
+// briefly so admin page loads / sends don't hit the API every time.
+let alimTplCache = { at: 0, list: [] };
+const ALIM_TPL_TTL = 5 * 60 * 1000;
+async function getAlimtalkTemplates(log, force = false) {
+  const now = Date.now();
+  if (!force && alimTplCache.list.length && now - alimTplCache.at < ALIM_TPL_TTL) {
+    return alimTplCache.list;
+  }
+  const list = await listAlimtalkTemplates(log);
+  if (list.length) alimTplCache = { at: now, list };
+  return list;
+}
 
 const FIELD_TYPES = new Set(['text', 'textarea', 'checkbox', 'notice']);
 
@@ -202,7 +216,10 @@ export default async function adminRoutes(app) {
       if (!alimtalkConfigured()) return reply.code(400).send({ error: '알림톡이 설정되지 않았습니다.' });
       const templateCode = typeof req.body?.templateCode === 'string' ? req.body.templateCode.trim() : '';
       if (!templateCode) return reply.code(400).send({ error: '알림톡 템플릿을 선택해주세요.' });
-      result = await sendAlimtalk(req.log, { to: digits, templateCode, content: message });
+      // Buttons come from the NCP-registered template (fixed links), never the client.
+      const tpls = await getAlimtalkTemplates(req.log);
+      const tpl = tpls.find((t) => t.code === templateCode);
+      result = await sendAlimtalk(req.log, { to: digits, templateCode, content: message, buttons: tpl?.buttons || [] });
       msgType = '알림톡';
     } else {
       if (!sensConfigured()) return reply.code(400).send({ error: 'SMS가 설정되지 않았습니다.' });
@@ -502,6 +519,14 @@ export default async function adminRoutes(app) {
     return { ok: true };
   });
 
+  // Live AlimTalk templates from NCP (code, name, content, buttons, status).
+  app.get('/api/admin/alimtalk-templates', { preHandler: requireAdmin }, async (req) => {
+    if (!alimtalkConfigured()) return { configured: false, templates: [] };
+    const refresh = req.query?.refresh === '1' || req.query?.refresh === 'true';
+    const templates = await getAlimtalkTemplates(req.log, refresh);
+    return { configured: true, templates };
+  });
+
   app.get('/api/admin/settings', { preHandler: requireAdmin }, async () => {
     const db = openDatabase();
     const rows = db.prepare('SELECT key, value FROM settings').all();
@@ -525,7 +550,6 @@ export default async function adminRoutes(app) {
     const allowed = new Set([
       'camera_enabled', 'camera_status_enabled', 'home_html', 'est_wall_mm', 'est_infill_pct', 'est_price_per_m',
       'sms_template', 'sms_submit_enabled', 'sms_submit_template', 'sms_done_list',
-      'alimtalk_templates',
     ]);
     const numericKeys = new Set(['est_wall_mm', 'est_infill_pct', 'est_price_per_m']);
     for (const [k, v] of Object.entries(body)) {
@@ -544,18 +568,6 @@ export default async function adminRoutes(app) {
         }
       } catch {
         return reply.code(400).send({ error: '메시지 템플릿 형식이 올바르지 않습니다.' });
-      }
-    }
-    if (body.alimtalk_templates !== undefined) {
-      try {
-        const arr = JSON.parse(body.alimtalk_templates);
-        if (!Array.isArray(arr) || arr.length > 20) throw new Error('bad');
-        for (const it of arr) {
-          if (!it || typeof it !== 'object') throw new Error('bad');
-          if (String(it.code ?? '').length > 60 || String(it.name ?? '').length > 100 || String(it.content ?? '').length > 1000) throw new Error('bad');
-        }
-      } catch {
-        return reply.code(400).send({ error: '알림톡 템플릿 형식이 올바르지 않습니다.' });
       }
     }
     const upsert = db.prepare(`
