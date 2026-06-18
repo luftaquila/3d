@@ -6,21 +6,7 @@ import { openDatabase, recordSmsLog } from '../db.js';
 import { config } from '../config.js';
 import { isUlid, maskPhone } from '../log-utils.js';
 import { sendSms, sensConfigured, smsByteLength } from '../sens.js';
-import { sendAlimtalk, alimtalkConfigured, listAlimtalkTemplates } from '../alimtalk.js';
-
-// AlimTalk templates are pulled live from NCP (channel-registered), cached
-// briefly so admin page loads / sends don't hit the API every time.
-let alimTplCache = { at: 0, list: [] };
-const ALIM_TPL_TTL = 5 * 60 * 1000;
-async function getAlimtalkTemplates(log, force = false) {
-  const now = Date.now();
-  if (!force && alimTplCache.list.length && now - alimTplCache.at < ALIM_TPL_TTL) {
-    return alimTplCache.list;
-  }
-  const list = await listAlimtalkTemplates(log);
-  if (list.length) alimTplCache = { at: now, list };
-  return list;
-}
+import { sendAlimtalk, alimtalkConfigured, getAlimtalkTemplates } from '../alimtalk.js';
 
 const FIELD_TYPES = new Set(['text', 'textarea', 'checkbox', 'notice']);
 
@@ -549,7 +535,8 @@ export default async function adminRoutes(app) {
     const body = req.body ?? {};
     const allowed = new Set([
       'camera_enabled', 'camera_status_enabled', 'home_html', 'est_wall_mm', 'est_infill_pct', 'est_price_per_m',
-      'sms_template', 'sms_submit_enabled', 'sms_submit_template', 'sms_done_list',
+      'message_channel', 'sms_template', 'sms_submit_enabled', 'sms_submit_template', 'sms_done_list',
+      'alimtalk_submit_code',
     ]);
     const numericKeys = new Set(['est_wall_mm', 'est_infill_pct', 'est_price_per_m']);
     for (const [k, v] of Object.entries(body)) {
@@ -557,6 +544,11 @@ export default async function adminRoutes(app) {
         const n = Number(v);
         if (!Number.isFinite(n) || n < 0) return reply.code(400).send({ error: `잘못된 값: ${k}` });
       }
+    }
+    // System-wide messaging channel: customer notifications go out as SMS or
+    // AlimTalk (one or the other, see message_channel in the admin settings UI).
+    if (body.message_channel !== undefined && !['sms', 'alimtalk'].includes(body.message_channel)) {
+      return reply.code(400).send({ error: '잘못된 발송 방식입니다.' });
     }
     if (body.sms_done_list !== undefined) {
       try {

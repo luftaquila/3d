@@ -66,9 +66,20 @@ async function renderSettings() {
   const estInfill = settings.est_infill_pct ?? '15';
   const estPrice = settings.est_price_per_m ?? '500';
   const submitOn = settings.sms_submit_enabled === '1';
+  const channel = settings.message_channel === 'alimtalk' ? 'alimtalk' : 'sms';
   const tplVals = (t) => ({
     content: settings[t.contentKey] || (t.id === 'quote' ? DEFAULT_QUOTE_TEMPLATE : ''),
   });
+  // For the AlimTalk auto-submit picker: pull the channel's approved templates.
+  let alimSubmitOpts = '';
+  if (caps.alimtalk && channel === 'alimtalk') {
+    try {
+      const alimTpls = (await api('/api/admin/alimtalk-templates'))?.templates || [];
+      alimSubmitOpts = alimTpls.filter((t) => t.approved).map((t) =>
+        `<option value="${escapeAttr(t.code)}" ${settings.alimtalk_submit_code === t.code ? 'selected' : ''}>${escapeHtml(t.name)}</option>`
+      ).join('');
+    } catch { /* NCP 일시 오류 — 선택지 비움 */ }
+  }
 
   host.innerHTML = `
     <details class="collapse-card">
@@ -89,25 +100,50 @@ async function renderSettings() {
         <div class="row" style="margin-top:10px;"><button class="btn" id="save-home-html">저장</button></div>
 
         <div class="settings-section">
-          <h3>SMS 메시지 프리셋</h3>
-          <p class="muted small" style="margin:0 0 10px;">치환자: <code>{amount}</code> 최종 금액, <code>{name}</code> 고객명, <code>{filament}</code> 필라멘트(m), <code>{cost}</code> 비용, <code>{discount}</code> 할인%, <code>{comment}</code> 견적 코멘트, <code>{link}</code> 내 견적 링크, <code>{eta}</code> 예상 완료 시각.</p>
-          ${FIXED_TEMPLATES.map((t) => renderTemplateEditor(t, tplVals(t), { withEnable: t.id === 'submit', enabled: submitOn })).join('')}
-          <div style="margin-top:18px;">
-            <strong class="small">메시지 템플릿</strong>
-            <p class="muted small" style="margin:4px 0 8px;">필요한 만큼 추가/삭제하세요. 제목은 발송 드롭다운에 표시됩니다.</p>
-            <div id="done-list"></div>
-            <div class="row" style="gap:8px;margin-top:10px;">
-              <button class="btn secondary" id="done-add" style="padding:4px 12px;font-size:12px;">+ 템플릿 추가</button>
-              <button class="btn" id="done-save" style="padding:4px 12px;font-size:12px;">템플릿 저장</button>
-            </div>
+          <h3>메시지 발송</h3>
+          <p class="muted small" style="margin:0 0 10px;">고객 알림(견적 접수·안내)의 기본 발송 방식입니다. 견적건별 발송 시 이 방식이 기본 선택되며, 견적 접수 자동 발송도 이 방식으로 나갑니다.</p>
+          <div class="row" style="gap:18px;align-items:center;flex-wrap:wrap;">
+            <label style="display:flex;align-items:center;gap:6px;font-weight:normal;margin:0;">
+              <input type="radio" name="msg-channel" value="sms" ${channel === 'sms' ? 'checked' : ''} style="width:auto;"> 문자
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;font-weight:normal;margin:0;${caps.alimtalk ? '' : 'opacity:0.55;'}">
+              <input type="radio" name="msg-channel" value="alimtalk" ${channel === 'alimtalk' ? 'checked' : ''} ${caps.alimtalk ? '' : 'disabled'} style="width:auto;"> 알림톡${caps.alimtalk ? '' : ' <span class="muted">(미설정)</span>'}
+            </label>
           </div>
-        </div>
 
-        <div class="settings-section">
-          <h3>알림톡 (Biz Message)</h3>
-          <p class="muted small" style="margin:0;">${caps.alimtalk
-            ? `발신 채널: <code>${escapeHtml(caps.plusFriendId || '(미설정)')}</code> · 템플릿은 <b>NCP 콘솔</b>에서 등록·검수하며 발송 화면에서 자동으로 불러옵니다(승인된 것만 발송). 본문 변수 <code>{name}</code>/<code>{amount}</code>/<code>{filament}</code>/<code>{cost}</code>/<code>{discount}</code>/<code>{comment}</code>는 발송 시 견적값으로 치환됩니다.`
-            : '알림톡 미설정 — 서버 env(BIZ_MESSAGE_SERVICE_ID·KAKAO_PLUS_FRIEND_ID) + SENS 키가 필요합니다.'}</p>
+          <label style="display:flex;align-items:center;gap:8px;margin-top:14px;">
+            <input type="checkbox" id="submit-auto-toggle" ${submitOn ? 'checked' : ''} style="width:auto;">
+            견적 접수 시 고객에게 자동 발송
+          </label>
+          ${channel === 'alimtalk' ? `
+            <label for="alim-submit-code" style="margin-top:12px;">접수 자동 발송 알림톡 템플릿</label>
+            <p class="muted small" style="margin:4px 0 6px;">자동 발송에 사용할 승인된 템플릿을 선택하세요. 접수 시점엔 견적값이 없으므로 본문 변수는 <code>{name}</code>(고객명)만 채워집니다.</p>
+            <select id="alim-submit-code">
+              <option value="">— 선택 안 함 —</option>
+              ${alimSubmitOpts}
+            </select>
+          ` : ''}
+
+          <details class="sub-collapse" style="margin-top:16px;">
+            <summary>메시지 템플릿</summary>
+            <div style="margin-top:12px;">
+              ${channel === 'alimtalk'
+                ? `<p class="muted small" style="margin:0;">발신 채널: <code>${escapeHtml(caps.plusFriendId || '(미설정)')}</code> · 알림톡 템플릿은 <b>NCP 콘솔</b>에서 등록·검수하며 발송 화면에서 자동으로 불러옵니다(승인된 것만 발송). 본문 변수 <code>{name}</code>/<code>{amount}</code>/<code>{filament}</code>/<code>{cost}</code>/<code>{discount}</code>/<code>{comment}</code>는 발송 시 견적값으로 치환됩니다.</p>`
+                : `
+                  <p class="muted small" style="margin:0 0 10px;">치환자: <code>{amount}</code> 최종 금액, <code>{name}</code> 고객명, <code>{filament}</code> 필라멘트(m), <code>{cost}</code> 비용, <code>{discount}</code> 할인%, <code>{comment}</code> 견적 코멘트, <code>{link}</code> 내 견적 링크, <code>{eta}</code> 예상 완료 시각.</p>
+                  ${FIXED_TEMPLATES.map((t) => renderTemplateEditor(t, tplVals(t))).join('')}
+                  <div style="margin-top:18px;">
+                    <strong class="small">추가 메시지 템플릿</strong>
+                    <p class="muted small" style="margin:4px 0 8px;">필요한 만큼 추가/삭제하세요. 제목은 발송 드롭다운에 표시됩니다.</p>
+                    <div id="done-list"></div>
+                    <div class="row" style="gap:8px;margin-top:10px;">
+                      <button class="btn secondary" id="done-add" style="padding:4px 12px;font-size:12px;">+ 템플릿 추가</button>
+                      <button class="btn" id="done-save" style="padding:4px 12px;font-size:12px;">템플릿 저장</button>
+                    </div>
+                  </div>
+                `}
+            </div>
+          </details>
         </div>
 
         <div class="settings-section">
@@ -173,7 +209,35 @@ async function renderSettings() {
     } catch (err) { toast(err.message, 'error'); }
   });
 
-  // SMS 템플릿 에디터들 (제목 + 본문 + 카운터 + 저장; 견적 접수는 on/off 포함)
+  // 시스템 기본 발송 방식(문자/알림톡). 변경 시 템플릿 편집 영역과 접수 템플릿
+  // 선택지가 달라지므로 설정 패널을 다시 그린다.
+  host.querySelectorAll('input[name="msg-channel"]').forEach((radio) => {
+    radio.addEventListener('change', async (e) => {
+      if (!e.target.checked) return;
+      try {
+        await api('/api/admin/settings', { method: 'PUT', body: { message_channel: e.target.value } });
+        toast('발송 방식 저장됨', 'success');
+        renderSettings();    // swap template editors + 접수 템플릿 선택지
+        renderQuotesAdmin(); // apply the new default to each quote's send dropdown
+      } catch (err) { toast(err.message, 'error'); }
+    });
+  });
+  document.getElementById('submit-auto-toggle')?.addEventListener('change', async (e) => {
+    try {
+      await api('/api/admin/settings', { method: 'PUT', body: { sms_submit_enabled: e.target.checked ? '1' : '0' } });
+      toast('설정 저장됨', 'success');
+    } catch (err) { toast(err.message, 'error'); }
+  });
+  document.getElementById('alim-submit-code')?.addEventListener('change', async (e) => {
+    try {
+      await api('/api/admin/settings', { method: 'PUT', body: { alimtalk_submit_code: e.target.value } });
+      toast('접수 알림톡 템플릿 저장됨', 'success');
+    } catch (err) { toast(err.message, 'error'); }
+  });
+
+  // SMS 본문 템플릿 편집은 문자 채널일 때만 노출되므로 그때만 와이어링한다.
+  if (channel === 'sms') {
+  // SMS 템플릿 에디터들 (제목 + 본문 + 카운터 + 저장)
   host.querySelectorAll('.sms-tpl').forEach((el) => {
     const t = FIXED_TEMPLATES.find((x) => x.id === el.dataset.tpl);
     if (!t) return;
@@ -225,6 +289,7 @@ async function renderSettings() {
       toast('메시지 템플릿 저장됨', 'success');
     } catch (err) { toast(err.message, 'error'); }
   });
+  } // end if (channel === 'sms')
 
   document.getElementById('backfill-start').addEventListener('click', runBackfill);
   renderFieldsAdmin();
@@ -534,6 +599,7 @@ async function renderQuotesAdmin() {
   alimtalkAvailable = false;
   loadAlimTemplates([]);
   loadSmsTemplates(settings);
+  messageChannel = settings.message_channel === 'alimtalk' ? 'alimtalk' : 'sms';
   smsSubmitEnabled = settings.sms_submit_enabled === '1';
   estPricePerM = Number(settings.est_price_per_m) || 500;
   const fieldMap = new Map(fields.map((f) => [f.id, f]));
@@ -581,7 +647,8 @@ async function renderQuotesAdmin() {
   applyFilters();
 
   // 느린 외부(NCP) 호출은 목록을 다 그린 뒤 백그라운드로. 도착하면 이미 그려진
-  // 각 행의 채널 셀렉터에 알림톡 옵션만 끼워 넣는다(편집 중인 입력은 건드리지 않음).
+  // 각 행의 채널 셀렉터에 알림톡 옵션을 끼워 넣고(편집 중인 입력은 건드리지 않음),
+  // 시스템 기본이 알림톡이면 그 행들을 알림톡으로 전환한다.
   // 이후 검색/필터로 다시 그려지는 행은 wireQuoteCalc가 전역값을 읽어 자동 포함.
   api('/api/admin/alimtalk-templates').then((alimRes) => {
     alimtalkAvailable = !!(alimRes && alimRes.configured);
@@ -592,15 +659,22 @@ async function renderQuotesAdmin() {
 
 // 백그라운드로 알림톡 템플릿이 도착했을 때, 이미 렌더된 채널 셀렉터에 알림톡
 // 옵션을 추가하고 노출한다. 전체 재렌더 대신 surgical 추가라 진행 중 편집 보존.
+// 시스템 기본 채널이 알림톡이면(초기 렌더 땐 알림톡 미로딩이라 문자로 떨어졌던)
+// 셀렉터를 알림톡으로 전환하고 change를 발생시켜 본문/템플릿을 다시 채운다.
 function enableAlimtalkChannel() {
   if (!alimtalkAvailable || !alimTemplateOrder.length) return;
   document.querySelectorAll('.quote-sms .sms-channel').forEach((sel) => {
-    if ([...sel.options].some((o) => o.value === 'alimtalk')) return;
-    const opt = document.createElement('option');
-    opt.value = 'alimtalk';
-    opt.textContent = '알림톡';
-    sel.appendChild(opt);
+    if (![...sel.options].some((o) => o.value === 'alimtalk')) {
+      const opt = document.createElement('option');
+      opt.value = 'alimtalk';
+      opt.textContent = '알림톡';
+      sel.appendChild(opt);
+    }
     sel.style.display = '';
+    if (messageChannel === 'alimtalk' && sel.value !== 'alimtalk') {
+      sel.value = 'alimtalk';
+      sel.dispatchEvent(new Event('change'));
+    }
   });
 }
 
@@ -822,6 +896,7 @@ const DEFAULT_QUOTE_TEMPLATE = '견적: {amount}원\n상세: {link}';
 let smsTemplates = {};        // id -> { label, content }
 let smsTemplateOrder = [];    // ordered ids for the send dropdown
 let smsSubmitEnabled = false; // when auto-send is on, hide 견적 접수 from the manual dropdown
+let messageChannel = 'sms';   // system-wide default channel; pre-selects each quote's send dropdown
 let estPricePerM = 500;       // filament price per meter; loaded from settings
 let printEtaText = '';        // in-progress print ETA "DD일 HH:MM" (24h) for {eta}; '' when idle
 let alimtalkAvailable = false; // AlimTalk (Biz Message) configured server-side
@@ -944,12 +1019,15 @@ function wireQuoteCalc(q) {
 
   // Channel selector: 문자 always; 알림톡 only when Biz Message is configured and
   // at least one approved template is registered. SMS and AlimTalk are separate
-  // template sets.
-  let channel = 'sms';
+  // template sets. Defaults to the system-wide messageChannel when that channel
+  // is selectable (알림톡 loads in the background — see enableAlimtalkChannel).
+  const alimSelectable = alimtalkAvailable && alimTemplateOrder.length;
+  let channel = (messageChannel === 'alimtalk' && alimSelectable) ? 'alimtalk' : 'sms';
   let selectedId = null;
   const channelOpts = [{ v: 'sms', label: '문자' }];
-  if (alimtalkAvailable && alimTemplateOrder.length) channelOpts.push({ v: 'alimtalk', label: '알림톡' });
+  if (alimSelectable) channelOpts.push({ v: 'alimtalk', label: '알림톡' });
   channelEl.innerHTML = channelOpts.map((c) => `<option value="${c.v}">${c.label}</option>`).join('');
+  channelEl.value = channel;
   channelEl.style.display = channelOpts.length > 1 ? '' : 'none';
 
   const currentSet = () => (channel === 'alimtalk'

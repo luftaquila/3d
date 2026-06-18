@@ -877,6 +877,22 @@ details.collapse-card > summary::before {
 }
 details.collapse-card[open] > summary::before { content: '▾'; }
 .collapse-body { margin-top: 14px; }
+
+/* Nested collapsible inside a settings section (e.g. 메시지 템플릿) */
+details.sub-collapse > summary {
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 600;
+  list-style: none;
+}
+details.sub-collapse > summary::-webkit-details-marker { display: none; }
+details.sub-collapse > summary::before {
+  content: '▸';
+  display: inline-block;
+  width: 1em;
+  color: var(--text-muted);
+}
+details.sub-collapse[open] > summary::before { content: '▾'; }
 .settings-section {
   margin-top: 24px;
   padding-top: 20px;

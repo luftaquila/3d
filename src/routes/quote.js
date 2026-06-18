@@ -9,10 +9,28 @@ import { config } from '../config.js';
 import { validateStl, validate3mf } from '../stl-validate.js';
 import { sendQuoteNotification } from '../brevo.js';
 import { sendSms, sensConfigured, smsByteLength } from '../sens.js';
+import { sendAlimtalk, alimtalkConfigured, getAlimtalkTemplates } from '../alimtalk.js';
 import { isUlid, maskEmail, maskPhone } from '../log-utils.js';
 
 const PHONE_RE = /^[0-9+\-() ]{6,24}$/;
 const mb = (n) => `${Math.round(n / (1024 * 1024))}MB`;
+
+// Fill an AlimTalk template body for the on-submit auto-notify. The template
+// content uses #{var}; normalize to {var}, then fill the only values known at
+// submit time (name/link). Quote-calc placeholders (amount/cost/…) don't exist
+// yet, so they collapse to '' — the 접수 template should only reference {name}.
+function renderSubmitVars(content, { name, link }) {
+  return String(content || '')
+    .replace(/#\{/g, '{')
+    .split('{name}').join(name || '')
+    .split('{link}').join(link || '')
+    .split('{amount}').join('')
+    .split('{cost}').join('')
+    .split('{discount}').join('')
+    .split('{filament}').join('')
+    .split('{comment}').join('')
+    .split('{eta}').join('');
+}
 
 const MAX_THUMB_BYTES = 512 * 1024;
 const MAX_THUMB_DIM = 512;
@@ -343,21 +361,41 @@ export default async function quoteRoutes(app) {
       estimateConfig,
     }).catch(() => {});
 
-    // Optional auto-SMS to the customer on submit (admin-configurable preset).
+    // Optional auto-notify to the customer on submit (admin-configurable preset).
+    // Channel follows the system-wide message_channel setting: AlimTalk sends a
+    // chosen approved template (alimtalk_submit_code); otherwise SMS.
     try {
       const enabled = db.prepare("SELECT value FROM settings WHERE key = 'sms_submit_enabled'").get()?.value === '1';
-      const tpl = db.prepare("SELECT value FROM settings WHERE key = 'sms_submit_template'").get()?.value || '';
-      if (enabled && tpl.trim() && sensConfigured()) {
-        sendSms(req.log, { to: phone, content: tpl })
-          .then((result) => recordSmsLog(db, {
-            quoteId, name, phone, kind: '견적 접수',
-            msgType: smsByteLength(tpl) > 90 ? 'LMS' : 'SMS',
-            subject: null, content: tpl, ok: result.ok, statusCode: result.status,
-          }))
-          .catch(() => {});
+      const channel = db.prepare("SELECT value FROM settings WHERE key = 'message_channel'").get()?.value === 'alimtalk'
+        ? 'alimtalk' : 'sms';
+      if (enabled && channel === 'alimtalk' && alimtalkConfigured()) {
+        const code = db.prepare("SELECT value FROM settings WHERE key = 'alimtalk_submit_code'").get()?.value || '';
+        if (code) {
+          getAlimtalkTemplates(req.log).then((tpls) => {
+            const tpl = tpls.find((t) => t.code === code);
+            if (!tpl) return;
+            const content = renderSubmitVars(tpl.content, { name, link: `${config.publicOrigin}/my` });
+            return sendAlimtalk(req.log, { to: phone, templateCode: code, content, buttons: tpl.buttons || [] })
+              .then((result) => recordSmsLog(db, {
+                quoteId, name, phone, kind: '견적 접수',
+                msgType: '알림톡', subject: null, content, ok: result.ok, statusCode: result.status,
+              }));
+          }).catch(() => {});
+        }
+      } else if (enabled && channel === 'sms' && sensConfigured()) {
+        const tpl = db.prepare("SELECT value FROM settings WHERE key = 'sms_submit_template'").get()?.value || '';
+        if (tpl.trim()) {
+          sendSms(req.log, { to: phone, content: tpl })
+            .then((result) => recordSmsLog(db, {
+              quoteId, name, phone, kind: '견적 접수',
+              msgType: smsByteLength(tpl) > 90 ? 'LMS' : 'SMS',
+              subject: null, content: tpl, ok: result.ok, statusCode: result.status,
+            }))
+            .catch(() => {});
+        }
       }
     } catch (err) {
-      req.log.warn({ err }, 'submit sms check failed');
+      req.log.warn({ err }, 'submit notify check failed');
     }
 
     req.log.info({

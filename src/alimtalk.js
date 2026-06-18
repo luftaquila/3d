@@ -81,6 +81,19 @@ export async function listAlimtalkTemplates(log) {
   return out;
 }
 
+// Cached wrapper over listAlimtalkTemplates. The list endpoint is N+1 against
+// NCP (one detail fetch per code), so admin page loads, manual sends, and the
+// auto-submit notify share a short-lived cache.
+let tplCache = { at: 0, list: [] };
+const TPL_TTL = 5 * 60 * 1000;
+export async function getAlimtalkTemplates(log, force = false) {
+  const now = Date.now();
+  if (!force && tplCache.list.length && now - tplCache.at < TPL_TTL) return tplCache.list;
+  const list = await listAlimtalkTemplates(log);
+  if (list.length) tplCache = { at: now, list };
+  return list;
+}
+
 // Send one AlimTalk message. Returns { ok, status, data }; never throws on a
 // non-2xx response. content must match the approved template identified by
 // templateCode.
