@@ -1015,6 +1015,7 @@ function wireQuoteCalc(q) {
   const costEl = calcEl.querySelector('[data-calc="cost"]');
   const discountEl = calcEl.querySelector('[data-calc="discount"]');
   const finalEl = calcEl.querySelector('[data-calc="finalCost"]');
+  const commentEl = calcEl.querySelector('[data-calc="comment"]');
   const floor100 = (n) => Math.max(0, Math.floor(n / 100) * 100);
 
   // Channel selector: 문자 always; 알림톡 only when Biz Message is configured and
@@ -1105,6 +1106,9 @@ function wireQuoteCalc(q) {
   // 할인율 편집 → 최종 자동
   discountEl.addEventListener('input', applyFinal);
   finalEl.addEventListener('input', refreshSms);
+  // 코멘트 편집 → 본문 {comment} 라이브 재치환. 알림톡은 본문이 read-only라 이
+  // 재치환이 유일한 반영 경로(예: 출력 불가 사유). 없으면 사유가 빈칸으로 발송됨.
+  commentEl?.addEventListener('input', refreshSms);
   smsText.addEventListener('input', refreshCount);
 
   refreshSms(); // initial SMS body from rendered values (don't overwrite stored final)
