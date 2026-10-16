@@ -7,7 +7,7 @@ import { requireAuth, requireCsrfHeader } from '../auth.js';
 import { openDatabase, recordSmsLog } from '../db.js';
 import { config } from '../config.js';
 import { validateStl, validate3mf } from '../stl-validate.js';
-import { sendQuoteNotification } from '../brevo.js';
+import { sendQuoteNotification } from '../admin-notify.js';
 import { sendSms, sensConfigured, smsByteLength } from '../sens.js';
 import { sendAlimtalk, alimtalkConfigured, getAlimtalkTemplates } from '../alimtalk.js';
 import { isUlid, maskEmail, maskPhone } from '../log-utils.js';
