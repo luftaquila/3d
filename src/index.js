@@ -49,10 +49,10 @@ async function build() {
         },
       },
     },
-    // Trust only the Podman traefik bridge network (10.89.0.0/16) and loopback.
-    // Anything else (including other containers reaching 3d directly) cannot
-    // forge X-Forwarded-For to bypass rate-limit or poison req.ip.
-    trustProxy: ['10.89.0.0/16', '127.0.0.1', '::1'],
+    // Trust only the k3s pod network (10.42.0.0/16, where traefik runs) and
+    // loopback. Anything else cannot forge X-Forwarded-For to bypass
+    // rate-limit or poison req.ip.
+    trustProxy: ['10.42.0.0/16', '127.0.0.1', '::1'],
     bodyLimit: 2 * 1024 * 1024,
   });
 
