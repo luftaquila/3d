@@ -107,7 +107,7 @@ export default async function quoteRoutes(app) {
   app.post('/api/quotes', {
     preHandler: [requireAuth, requireCsrfHeader],
     config: {
-      rateLimit: { max: 5, timeWindow: '1 hour' },
+      rateLimit: { max: 20, timeWindow: '1 hour' },
     },
   }, async (req, reply) => {
     const db = openDatabase();
@@ -126,6 +126,7 @@ export default async function quoteRoutes(app) {
     let totalBytes = 0;
     let fileCount = 0;
     let aborted = null;
+    const rejectedFiles = [];
 
     try {
       for await (const part of req.parts()) {
@@ -180,6 +181,7 @@ export default async function quoteRoutes(app) {
         const is3mf = origName.endsWith('.3mf');
         if (!origName.endsWith('.stl') && !is3mf) {
           aborted = 'STL 또는 3MF 파일만 허용됩니다.';
+          rejectedFiles.push({ name: part.filename, reason: 'extension' });
           part.file.resume();
           continue;
         }
@@ -195,17 +197,20 @@ export default async function quoteRoutes(app) {
           await pipeline(part.file, ws);
         } catch (err) {
           aborted = '파일 업로드 실패';
+          rejectedFiles.push({ name: part.filename, size, reason: err?.message });
           await safeUnlink(filePath);
           continue;
         }
         if (part.file.truncated || size > config.limits.fileSizeBytes) {
           aborted = `파일 하나의 크기가 너무 큽니다 (최대 ${mb(config.limits.fileSizeBytes)}).`;
+          rejectedFiles.push({ name: part.filename, size, reason: 'file too large' });
           await safeUnlink(filePath);
           continue;
         }
         totalBytes += size;
         if (totalBytes > config.limits.totalSizeBytes) {
           aborted = `업로드 총합 크기가 너무 큽니다 (최대 ${mb(config.limits.totalSizeBytes)}).`;
+          rejectedFiles.push({ name: part.filename, size, reason: 'total too large' });
           await safeUnlink(filePath);
           continue;
         }
@@ -213,6 +218,7 @@ export default async function quoteRoutes(app) {
         const check = is3mf ? await validate3mf(filePath) : await validateStl(filePath);
         if (!check.ok) {
           aborted = `${is3mf ? '3MF' : 'STL'} 형식 검증 실패: ${check.reason}`;
+          rejectedFiles.push({ name: part.filename, size, reason: check.reason });
           await safeUnlink(filePath);
           continue;
         }
@@ -243,25 +249,21 @@ export default async function quoteRoutes(app) {
       return reply.code(400).send({ error: '업로드 처리 중 오류가 발생했습니다.' });
     }
 
-    if (aborted) {
+    // Log why a submission was rejected; these count toward the rate limit, so
+    // repeated 400s are otherwise indistinguishable from abuse in the logs.
+    const reject = async (error) => {
+      req.log.warn({
+        reason: error, contentLength: req.headers['content-length'], fileCount, totalBytes,
+        files: rejectedFiles.concat(acceptedFiles.map((f) => ({ name: f.filename, size: f.size }))),
+      }, 'quote submission rejected');
       await cleanupUploads(acceptedFiles);
-      return reply.code(400).send({ error: aborted });
-    }
-    if (!phone || !PHONE_RE.test(phone)) {
-      await cleanupUploads(acceptedFiles);
-      return reply.code(400).send({ error: '전화번호 형식이 올바르지 않습니다.' });
-    }
-    if (!name) {
-      await cleanupUploads(acceptedFiles);
-      return reply.code(400).send({ error: '이름 또는 닉네임을 입력해주세요.' });
-    }
-    if (!consented) {
-      await cleanupUploads(acceptedFiles);
-      return reply.code(400).send({ error: '개인정보 수집 동의가 필요합니다.' });
-    }
-    if (acceptedFiles.length === 0) {
-      return reply.code(400).send({ error: 'STL 파일을 최소 1개 업로드해주세요.' });
-    }
+      return reply.code(400).send({ error });
+    };
+    if (aborted) return reject(aborted);
+    if (!phone || !PHONE_RE.test(phone)) return reject('전화번호 형식이 올바르지 않습니다.');
+    if (!name) return reject('이름 또는 닉네임을 입력해주세요.');
+    if (!consented) return reject('개인정보 수집 동의가 필요합니다.');
+    if (acceptedFiles.length === 0) return reject('STL 파일을 최소 1개 업로드해주세요.');
 
     const validFieldIds = new Set(db.prepare('SELECT id FROM form_fields').all().map((r) => r.id));
     const filteredAnswers = {};
