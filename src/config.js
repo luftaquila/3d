@@ -22,10 +22,11 @@ export const config = {
     clientSecret: required('GOOGLE_CLIENT_SECRET'),
     redirectUrl: required('GOOGLE_REDIRECT_URL'),
   },
-  brevo: {
-    apiKey: optional('BREVO_API_KEY', ''),
-    fromEmail: optional('BREVO_FROM_EMAIL', ''),
-    fromName: optional('BREVO_FROM_NAME', '3D Print Service'),
+  adminNotify: {
+    // New-quote AlimTalk to the admin. Both required; either empty disables it.
+    // templateCode is a Kakao-approved template on the bizMessage channel below.
+    phone: optional('ADMIN_PHONE', '').replace(/\D/g, ''),
+    templateCode: optional('ADMIN_ALIMTALK_CODE', ''),
   },
   sens: {
     // Naver Cloud Platform SENS v2 (SMS). All optional — when any is missing
