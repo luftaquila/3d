@@ -1236,7 +1236,59 @@ function renderSliceTotals(q) {
   return `<div class="slice-totals small">
     <strong>슬라이싱 합계</strong>${notDone > 0 ? ` <span class="muted">(${notDone}개 파일 미완료)</span>` : ''}
     ${rows ? `<div class="st-grid">${rows}</div>` : '<div class="muted">완료된 결과 없음</div>'}
+    ${renderPlateBlock(q)}
   </div>`;
+}
+
+// "한 판으로 합치기": all model files of the quote arranged on shared plate(s),
+// each in the orientation its own slicing chose.
+function renderPlateBlock(q) {
+  const models = q.files.filter((f) => f.hasModel);
+  if (!slicerEnabled || models.length < 2) return '';
+  const p = q.plate;
+  const btn = (cls, label) => `<button class="btn ghost ${cls}" data-qid="${q.id}">${label}</button>`;
+  let body = '';
+  const actions = [];
+  if (!p) {
+    body = '<span class="muted">파일들을 한 판에 배치해 한 번에 출력할 수 있습니다.</span>';
+    actions.push(btn('plate-run', '한 판으로 합치기'));
+  } else if (p.status === 'pending') body = '<span class="muted">합치기 대기</span>';
+  else if (p.status === 'running') body = '<span class="muted">합치는 중…</span>';
+  else {
+    if (p.status === 'failed') body = `<span class="error" title="${escapeAttr(p.error || '')}">합치기 실패</span>`;
+    const prof = p.result?.profiles || {};
+    const rows = SLICE_PROFILES.filter((k) => prof[k]).map((k) => {
+      const x = prof[k];
+      return `<span class="sl-k">${k}</span><span>${fmtDur(x.time_s)}</span><span>${Number(x.grams).toFixed(1)}g</span><span>${x.plates > 1 ? `${x.plates}판` : '1판'}</span><span class="sl-cost">${wonText(sliceCost(x.meters))}</span><span></span>`;
+    }).join('');
+    if (rows) body += `<div class="st-grid">${rows}</div>`;
+    // a file re-sliced after the plate was made may have a new orientation
+    const stale = models.some((f) => f.slice?.slicedAt && p.slicedAt && f.slice.slicedAt > p.slicedAt);
+    if (stale) body += '<div class="muted">파일 방향이 바뀌었습니다. 다시 합치면 반영됩니다.</div>';
+    if (p.result) actions.push(btn('plate-detail', '상세'));
+    actions.push(btn('plate-run', '다시 합치기'));
+  }
+  return `<div class="plate-block"><strong>한 판으로 합치기</strong> ${body}
+    ${actions.length ? `<div class="row" style="gap:4px;">${actions.join('')}</div>` : ''}</div>`;
+}
+
+function plateTarget(q) {
+  const models = q.files.filter((f) => f.hasModel);
+  return {
+    kind: 'plate',
+    id: 'plate',
+    filename: `한 판 (파일 ${models.length}개)`,
+    hasModel: true,
+    slice: q.plate,
+    printDecision: models.every((f) => f.printDecision === 'approved') ? 'approved' : null,
+    printSent: q.plate?.printSent || null,
+  };
+}
+
+function markPlateQueued(q) {
+  q.plate = { ...(q.plate || {}), status: 'pending', error: null };
+  refreshSliceUi(q, null);
+  startSlicePoll();
 }
 
 // While any file is queued or running, poll its state and update just that
@@ -1261,11 +1313,20 @@ async function pollSlices() {
   const active = slicePollQuotes.flatMap((q) => q.files
     .filter((f) => SLICE_ACTIVE.has(f.slice?.status))
     .map((f) => ({ q, f })));
-  if (!active.length) { stopSlicePoll(); return; }
+  const plates = slicePollQuotes.filter((q) => SLICE_ACTIVE.has(q.plate?.status));
+  if (!active.length && !plates.length) { stopSlicePoll(); return; }
   let res;
   try {
-    res = await api(`/api/admin/slices?ids=${active.map((a) => a.f.id).join(',')}`);
+    res = await api(`/api/admin/slices?ids=${active.map((a) => a.f.id).join(',')}&quotes=${plates.map((q) => q.id).join(',')}`);
   } catch { return; } // try again next tick
+  for (const row of res.plates || []) {
+    const q = plates.find((x) => x.id === row.quoteId);
+    if (!q || !row.plate || row.plate.status === q.plate.status) continue;
+    q.plate = row.plate;
+    refreshSliceUi(q, null);
+    if (row.plate.status === 'done') toast('한 판 합치기 완료', 'success');
+    else if (row.plate.status === 'failed') toast('한 판 합치기 실패', 'error');
+  }
   for (const row of res.files) {
     const a = active.find((x) => x.f.id === row.id);
     if (!a || !row.slice) continue;
@@ -1278,7 +1339,7 @@ async function pollSlices() {
 }
 
 function refreshSliceUi(q, f) {
-  const card = document.querySelector(`.file-card[data-fid="${f.id}"]`);
+  const card = f && document.querySelector(`.file-card[data-fid="${f.id}"]`);
   if (card) {
     const html = renderSliceLine(q.id, f);
     const line = card.querySelector('.slice-line');
@@ -1325,6 +1386,20 @@ function wireSlice(q) {
       openSliceDetail(q, f);
     });
   });
+  document.querySelectorAll(`.plate-run[data-qid="${q.id}"]`).forEach((b) => {
+    if (!once(b)) return;
+    b.addEventListener('click', async () => {
+      try {
+        await api(`/api/admin/quotes/${q.id}/plate`, { method: 'POST', body: {} });
+        toast('파일들을 한 판으로 합칩니다. 끝나면 자동으로 표시됩니다.', 'success');
+        markPlateQueued(q);
+      } catch (err) { toast(err.message, 'error'); }
+    });
+  });
+  document.querySelectorAll(`.plate-detail[data-qid="${q.id}"]`).forEach((b) => {
+    if (!once(b)) return;
+    b.addEventListener('click', () => { if (q.plate?.result) openSliceDetail(q, plateTarget(q)); });
+  });
   const calcEl = document.querySelector(`.quote-calc[data-qid="${q.id}"]`);
   calcEl?.querySelectorAll('.slice-apply').forEach((b) => {
     if (!once(b)) return;
@@ -1341,11 +1416,15 @@ function wireSlice(q) {
 // Slice detail: one screen with the 3D view (0.20 / 0.08 preview, an
 // explored candidate, or the layout editor) and a side panel with the
 // numbers, candidates and the print decision.
+// f is a quote file, or plateTarget(q) for the quote's shared plate.
 async function openSliceDetail(q, f) {
   const viewer = await import('../viewer.js');
   const { host, close } = viewer.openViewerModal();
   const r = f.slice.result;
+  const isPlate = f.kind === 'plate';
   const base = `/slices/${q.id}/${f.id}`;
+  const apiBase = isPlate ? `/api/admin/quotes/${q.id}/plate` : `/api/admin/quotes/${q.id}/files/${f.id}`;
+  const queued = () => (isPlate ? markPlateQueued(q) : markSliceQueued(q, f));
   const canEdit = slicerEnabled && f.hasModel && (r.objects || []).length > 0
     && (r.objects || []).every((o) => o.preview);
   const profiles = SLICE_PROFILES.filter((k) => r.profiles?.[k]?.file);
@@ -1390,15 +1469,8 @@ async function openSliceDetail(q, f) {
     candTab.hidden = !cand;
     if (cand) candTab.textContent = `#${cand[0]} 후보 ${cand[1]}`;
     host.querySelectorAll('.sd-cand').forEach((tr) => tr.classList.toggle('sd-cand-active', `c:${tr.dataset.obj}:${tr.dataset.cand}` === viewId));
-    host.querySelectorAll('.sd-use-cand').forEach((b) => {
-      const o = (r.objects || []).find((x) => String(x.index) === b.dataset.obj);
-      const current = o && o.chosen_by !== 'manual' && cand?.[1] === o.chosen;
-      b.hidden = !cand || cand[0] !== b.dataset.obj || current;
-      if (!b.hidden) {
-        b.dataset.cand = cand[1];
-        b.textContent = `후보 ${cand[1]}로 다시 슬라이싱`;
-      }
-    });
+    viewedCand = cand;
+    renderChoice();
 
     if (viewId === 'layout') {
       const { mountLayoutEditor } = await import('../layout-editor.js');
@@ -1409,10 +1481,11 @@ async function openSliceDetail(q, f) {
         result: r,
         onSave: async (layout) => {
           try {
-            await api(`/api/admin/quotes/${q.id}/files/${f.id}/layout`, { method: 'POST', body: layout });
+            if (isPlate) await api(apiBase, { method: 'POST', body: { layout } });
+            else await api(`${apiBase}/layout`, { method: 'POST', body: layout });
             toast('이 배치로 다시 슬라이싱합니다. 끝나면 자동으로 표시됩니다.', 'success');
             close();
-            markSliceQueued(q, f);
+            queued();
           } catch (err) { toast(err.message, 'error'); }
         },
       });
@@ -1435,14 +1508,48 @@ async function openSliceDetail(q, f) {
 
   host.querySelectorAll('.sd-tab').forEach((b) => b.addEventListener('click', () => show(b.dataset.view)));
   host.querySelectorAll('.sd-cand').forEach((tr) => tr.addEventListener('click', () => show(`c:${tr.dataset.obj}:${tr.dataset.cand}`)));
-  host.querySelectorAll('.sd-use-cand').forEach((b) => b.addEventListener('click', async () => {
-    try {
-      await api(`/api/admin/quotes/${q.id}/files/${f.id}/choose`, { method: 'POST', body: { objects: { [b.dataset.obj]: b.dataset.cand } } });
-      toast(`후보 ${b.dataset.cand}로 다시 슬라이싱합니다. 끝나면 자동으로 표시됩니다.`, 'success');
-      close();
-      markSliceQueued(q, f);
-    } catch (err) { toast(err.message, 'error'); }
+  // Candidate choices are collected per object and sent together, so a file
+  // with several objects is re-sliced once after all of them are decided.
+  const staged = {}; // object index -> candidate id
+  let viewedCand = null;
+  function renderChoice() {
+    host.querySelectorAll('.sd-use-cand').forEach((b) => {
+      const o = (r.objects || []).find((x) => String(x.index) === b.dataset.obj);
+      const shown = viewedCand && viewedCand[0] === b.dataset.obj ? viewedCand[1] : null;
+      const current = o && o.chosen_by !== 'manual' && shown === o.chosen && staged[b.dataset.obj] == null;
+      b.hidden = !shown || current;
+      if (b.hidden) return;
+      b.dataset.cand = shown;
+      b.textContent = staged[b.dataset.obj] === shown ? `후보 ${shown} 선택 취소` : `후보 ${shown}로 바꾸기`;
+    });
+    host.querySelectorAll('.sd-cand').forEach((tr) => {
+      tr.classList.toggle('sd-cand-staged', staged[tr.dataset.obj] === tr.dataset.cand);
+    });
+    const bar = $('.sd-choose-bar');
+    if (!bar) return;
+    const keys = Object.keys(staged);
+    bar.hidden = !keys.length;
+    bar.querySelector('.sd-choose-list').textContent = keys.map((k) => `#${k} → 후보 ${staged[k]}`).join(', ');
+  }
+  host.querySelectorAll('.sd-use-cand').forEach((b) => b.addEventListener('click', () => {
+    const o = (r.objects || []).find((x) => String(x.index) === b.dataset.obj);
+    if (staged[b.dataset.obj] === b.dataset.cand) delete staged[b.dataset.obj];
+    else if (o && o.chosen_by !== 'manual' && o.chosen === b.dataset.cand) delete staged[b.dataset.obj];
+    else staged[b.dataset.obj] = b.dataset.cand;
+    renderChoice();
   }));
+  $('.sd-choose-cancel')?.addEventListener('click', () => {
+    for (const k of Object.keys(staged)) delete staged[k];
+    renderChoice();
+  });
+  $('.sd-choose-go')?.addEventListener('click', async () => {
+    try {
+      await api(`${apiBase}/choose`, { method: 'POST', body: { objects: { ...staged } } });
+      toast('선택한 방향으로 다시 슬라이싱합니다. 끝나면 자동으로 표시됩니다.', 'success');
+      close();
+      queued();
+    } catch (err) { toast(err.message, 'error'); }
+  });
   host.querySelector('.sd-decision-save')?.addEventListener('click', async () => {
     const decision = host.querySelector('input[name="sd-decision"]:checked')?.value || null;
     const note = host.querySelector('.sd-note').value;
@@ -1456,14 +1563,14 @@ async function openSliceDetail(q, f) {
       printUi?.render();
     } catch (err) { toast(err.message, 'error'); }
   });
-  const printUi = $('.sd-print') ? wirePrintSection($('.sd-print .sd-print-body'), q, f, () => viewedProfile) : null;
+  const printUi = $('.sd-print') ? wirePrintSection($('.sd-print .sd-print-body'), q, f, () => viewedProfile, apiBase) : null;
   host._dispose = () => { mounted?.dispose(); mounted = null; printUi?.dispose(); };
   show(tabs[0]?.id ?? 'none');
 }
 
 // "프린터로 보내기": printer state, profile / plate / filament slot, then upload
 // + start through the server. Enabled only for approved files on an idle printer.
-function wirePrintSection(el, q, f, currentProfile) {
+function wirePrintSection(el, q, f, currentProfile, apiBase) {
   const r = f.slice.result;
   const profiles = SLICE_PROFILES.filter((k) => r.profiles?.[k]?.file);
   let status = null;
@@ -1500,7 +1607,16 @@ function wirePrintSection(el, q, f, currentProfile) {
     const trays = status.trays || [];
     const sel = prevTray != null && trays.some((t) => String(t.index) === prevTray) ? Number(prevTray) : defaultTray();
     const approved = f.printDecision === 'approved';
-    const reason = !approved ? '출력 승인을 저장해야 보낼 수 있습니다.'
+    // The send runs on the server: closing this dialog doesn't stop it, and a
+    // reopened dialog sees it through status.sending.
+    const sendingElsewhere = !busy && status.sending;
+    const up = status.upload;
+    const sendingText = up && up.total
+      ? `프린터로 올리는 중 ${Math.round((up.sent / up.total) * 100)}% (${(up.sent / 1048576).toFixed(0)}/${(up.total / 1048576).toFixed(0)}MB)`
+      : '보내는 중…';
+    const reason = !approved ? (f.kind === 'plate' ? '모든 파일을 출력 승인해야 보낼 수 있습니다.' : '출력 승인을 저장해야 보낼 수 있습니다.')
+      : sendingElsewhere ? `프린터로 보내는 중입니다 (${status.sending}). 창을 닫아도 계속 진행됩니다.`
+      : status.justStarted ? '방금 출력을 시작했습니다. 프린터 상태가 바뀌면 다시 보낼 수 있습니다.'
       : !status.startable ? '프린터가 대기 중일 때 보낼 수 있습니다.'
         : sel == null ? 'PLA가 들어 있는 슬롯이 없습니다.' : '';
     el.className = 'sd-print-body small';
@@ -1528,7 +1644,7 @@ function wirePrintSection(el, q, f, currentProfile) {
       }).join('')}</div>
       <label class="le-check"><input type="checkbox" class="sd-print-level" checked> 출력 전 베드 레벨링</label>
       <label class="le-check"><input type="checkbox" class="sd-print-timelapse"> 타임랩스 녹화</label>
-      <button class="btn accent sd-print-send" ${reason || busy ? 'disabled' : ''}>${busy ? '보내는 중…' : `${profile}mm 출력 시작 (${fmtDur(p.time_s)})`}</button>
+      <button class="btn accent sd-print-send" ${reason || busy ? 'disabled' : ''}>${busy || sendingElsewhere ? sendingText : `${profile}mm 출력 시작 (${fmtDur(p.time_s)})`}</button>
       ${reason ? `<div class="muted">${reason}</div>` : ''}`;
     el.querySelectorAll('.sd-print-prof').forEach((b) => b.addEventListener('click', () => { profile = b.dataset.k; render(); }));
     el.querySelector('.sd-print-send').addEventListener('click', send);
@@ -1545,8 +1661,9 @@ function wirePrintSection(el, q, f, currentProfile) {
     if (!ok) return;
     busy = true;
     render();
+    setTimeout(load, 2000); // show the upload progress soon
     try {
-      const res = await api(`/api/admin/quotes/${q.id}/files/${f.id}/print`, {
+      const res = await api(`${apiBase}/print`, {
         method: 'POST',
         body: {
           profile, plate, tray,
@@ -1555,9 +1672,11 @@ function wirePrintSection(el, q, f, currentProfile) {
         },
       });
       f.printSent = { at: Date.now(), profile: res.profile, plate: res.plate, tray: res.tray, name: res.name };
-      toast('프린터로 보냈습니다. 출력 시작을 확인하세요.', 'success');
+      if (f.kind === 'plate' && q.plate) q.plate.printSent = f.printSent;
+      // shown even if the dialog was closed meanwhile (the send kept going)
+      toast(`${f.filename}: 프린터로 보냈습니다. 출력 시작을 확인하세요.`, 'success');
     } catch (err) {
-      toast(err.message, 'error');
+      toast(`${f.filename}: ${err.message}`, 'error');
     } finally {
       busy = false;
       load();
@@ -1565,16 +1684,22 @@ function wirePrintSection(el, q, f, currentProfile) {
   }
 
   load();
-  timer = setInterval(() => { if (!document.hidden && !busy) load(); }, 10_000);
+  // faster while an upload runs, to show its progress
+  const tick = () => {
+    if (!document.hidden) load();
+    timer = setTimeout(tick, busy || status?.sending ? 2_000 : 10_000);
+  };
+  timer = setTimeout(tick, 10_000);
   return {
     render,
     setProfile(k) { if (r.profiles?.[k]?.file) { profile = k; render(); } },
-    dispose() { clearInterval(timer); },
+    dispose() { clearTimeout(timer); },
   };
 }
 
 function renderSliceDetail(f, base) {
   const r = f.slice.result;
+  const isPlate = f.kind === 'plate';
   const fmtNum = (v, d = 0) => (v == null ? '-' : Number(v).toFixed(d));
   const opt = (value, label) => `<label><input type="radio" name="sd-decision" value="${value}" ${(f.printDecision || '') === value ? 'checked' : ''}>${label}</label>`;
   const decision = `
@@ -1601,7 +1726,7 @@ function renderSliceDetail(f, base) {
   }).join('');
   const kv = [
     ['상태', r.status === 'done' ? '완료' : '<span class="error">실패</span>'],
-    ['방향 결정', r.mode === 'auto' ? 'Bambu 자동 방향' : '후보 탐색'],
+    ['방향 결정', isPlate ? '파일별로 정한 방향' : r.mode === 'auto' ? 'Bambu 자동 방향' : '후보 탐색'],
     ['소요', `${fmtNum(r.elapsed_s)}초`],
     ['완료 시각', f.slice.slicedAt ? fmtDate(f.slice.slicedAt) : '-'],
   ];
@@ -1626,8 +1751,10 @@ function renderSliceDetail(f, base) {
         <td>${wonText(sliceCost(m.meters))}</td>
         <td>${fmtDur(m.support_s)}</td><td>${fmtNum(m.height_mm)}mm</td></tr>`;
     }).join('');
-    const how = o.chosen_by === 'manual' ? '수동 배치'
-      : o.chosen ? `후보 ${o.chosen} (${{ llm: 'LLM 선택', admin: '직접 선택' }[o.chosen_by] || '자동 점수'})` : '';
+    const how = isPlate
+      ? { manual: '수동 배치', llm: 'LLM 선택', admin: '직접 선택', score: '자동 점수', upload: '업로드 방향' }[o.orientation] || ''
+      : o.chosen_by === 'manual' ? '수동 배치'
+        : o.chosen ? `후보 ${o.chosen} (${{ llm: 'LLM 선택', admin: '직접 선택' }[o.chosen_by] || '자동 점수'})` : '';
     return `<div class="sd-obj">
       <div class="sd-row"><b class="sd-ellipsis">#${o.index} ${escapeHtml(o.name)}</b></div>
       <dl class="sd-kv small">
@@ -1654,15 +1781,25 @@ function renderSliceDetail(f, base) {
       ? `<div class="small muted">LLM이 고른 방향을 직접 바꿨습니다. (이전 LLM 판단: ${escapeHtml(r.llm.summary || '')})</div>`
       : `<div class="small">LLM: ${escapeHtml(r.llm.summary || '')}</div>`)
     : (r.llm?.error ? `<div class="small muted">LLM 미사용 (${escapeHtml(r.llm.error)})</div>` : '');
+  const chooseBar = hasCands && slicerEnabled ? `
+      <div class="sd-choose-bar" hidden>
+        <div class="small">바꿀 방향: <b class="sd-choose-list"></b></div>
+        <div class="sd-row">
+          <button class="btn accent sd-choose-go">선택한 방향으로 다시 슬라이싱</button>
+          <button class="btn ghost sd-choose-cancel">취소</button>
+        </div>
+      </div>` : '';
   const orient = objects ? `
     <section class="sd-sec">
-      <h4>방향</h4>
-      ${hasCands ? '<div class="muted small">후보를 누르면 그 방향으로 0.20mm 슬라이싱한 결과가 보이고, 그 후보로 다시 슬라이싱할 수 있습니다.</div>' : ''}
+      <h4>${isPlate ? '객체' : '방향'}</h4>
+      ${isPlate ? '<div class="muted small">각 파일의 슬라이싱에서 정한 방향으로 한 판에 배치했습니다. 방향은 파일 상세에서 바꾸고 다시 합치세요.</div>' : ''}
+      ${hasCands ? '<div class="muted small">후보를 누르면 그 방향으로 0.20mm 슬라이싱한 결과가 보입니다. 객체마다 바꿀 후보를 고른 뒤 한 번에 다시 슬라이싱합니다.</div>' : ''}
+      ${chooseBar}
       ${objects}
       ${llmInfo}
     </section>` : '';
   const print = printerEnabled && Object.keys(r.profiles || {}).length
     ? '<section class="sd-sec sd-print"><h4>프린터로 보내기</h4><div class="sd-print-body muted small">프린터 상태 확인 중…</div></section>'
     : '';
-  return decision + print + result + orient;
+  return (isPlate ? '' : decision) + print + result + orient;
 }

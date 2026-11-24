@@ -18,6 +18,14 @@ function haConfigured() {
   return !!(config.homeassistant.url && config.homeassistant.token && printerPrefix());
 }
 
+// One send at a time. While a file is uploading the printer still reports
+// idle, so a second click (e.g. after closing and reopening the dialog) would
+// start a second job; Home Assistant also takes a few seconds to leave idle
+// after the print command, so a fresh start blocks new sends for a while.
+let sending = null; // printer-side file name being sent
+let startedAt = 0;
+const START_SETTLE_MS = 60_000;
+
 export function printerConfigured() {
   return !!config.slicer.url && haConfigured();
 }
@@ -82,7 +90,11 @@ export async function printerStatus() {
     progress: Number(val(progress)) || 0,
     remainingMin: Number.isFinite(rem) ? Math.round(rem * 60) : null,
     task: val(task),
-    startable: val(online) === 'on' && STARTABLE.has(state),
+    startable: val(online) === 'on' && STARTABLE.has(state) && !sending
+      && !(Date.now() - startedAt < START_SETTLE_MS),
+    sending,
+    upload: sending ? await uploadProgress() : null,
+    justStarted: STARTABLE.has(state) && Date.now() - startedAt < START_SETTLE_MS,
     trays: [
       ...ams,
       ...(external && !external.attributes?.empty ? [tray(external, EXTERNAL_SPOOL, '외부 스풀')] : []),
@@ -97,22 +109,36 @@ async function deviceId() {
   return id;
 }
 
+const UPLOAD_TIMEOUT_MS = 60 * 60 * 1000;
+
+// Progress of the worker's current upload to the printer, or null.
+async function uploadProgress() {
+  try {
+    const res = await request(`${config.slicer.url}/printer/upload`, { headersTimeout: 5000, bodyTimeout: 5000 });
+    const body = await res.body.json();
+    return body.upload || null;
+  } catch { return null; }
+}
+
 async function upload(quoteId, fileId, file, name) {
   const res = await request(`${config.slicer.url}/printer/upload`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ quoteId, fileId, file, name }),
-    headersTimeout: 180_000,
-    bodyTimeout: 180_000,
+    // the printer takes files at ~130KB/s: a 76MB project took about 10 minutes
+    headersTimeout: UPLOAD_TIMEOUT_MS,
+    bodyTimeout: UPLOAD_TIMEOUT_MS,
   });
   const body = await res.body.json().catch(() => ({}));
   if (res.statusCode !== 200) throw new Error(`프린터 업로드 실패: ${body.error || res.statusCode}`);
   return body;
 }
 
-// Printer-side file name: readable, no path characters.
+// Printer-side file name: readable, no path characters, and NFC. Files
+// uploaded from macOS carry decomposed (NFD) Hangul; the printer lists such a
+// name but cannot open it, and reports a MicroSD error (0500_C010) on print.
 export function printFileName(filename, profile) {
-  const base = String(filename).replace(/\.(stl|3mf)$/i, '')
+  const base = String(filename).normalize('NFC').replace(/\.(stl|3mf)$/i, '')
     .replace(/[\x00-\x1f/\\]/g, '_').trim().slice(0, 80) || 'model';
   return `${base}_${profile}.gcode.3mf`;
 }
@@ -120,13 +146,24 @@ export function printFileName(filename, profile) {
 // Upload and start. opts: { quoteId, fileId, filename, profile, plate, tray,
 // bedLeveling, timelapse }. Throws with a user-facing message on failure.
 export async function sendToPrinter(opts) {
+  if (sending) throw new Error(`이미 프린터로 보내는 중입니다 (${sending})`);
+  const name = printFileName(opts.filename, opts.profile);
+  sending = name;
+  try {
+    return await send(opts, name);
+  } finally {
+    sending = null;
+  }
+}
+
+async function send(opts, name) {
   const status = await printerStatus();
   if (!status.configured) throw new Error('프린터 연동이 설정되지 않았습니다');
   if (!status.online) throw new Error('프린터가 오프라인입니다');
-  if (!status.startable) throw new Error(`프린터가 출력을 시작할 수 없는 상태입니다 (${status.state || '알 수 없음'})`);
+  if (status.justStarted) throw new Error('방금 출력을 시작했습니다. 프린터 상태가 바뀐 뒤 다시 시도하세요.');
+  if (!STARTABLE.has(status.state)) throw new Error(`프린터가 출력을 시작할 수 없는 상태입니다 (${status.state || '알 수 없음'})`);
   if (!status.trays.some((t) => t.index === opts.tray)) throw new Error('선택한 필라멘트 슬롯이 없습니다');
 
-  const name = printFileName(opts.filename, opts.profile);
   await upload(opts.quoteId, opts.fileId, `${opts.profile}.gcode.3mf`, name);
   const useAms = opts.tray !== EXTERNAL_SPOOL;
   await ha('POST', '/api/services/bambu_lab/print_project_file', {
@@ -141,5 +178,6 @@ export async function sendToPrinter(opts) {
     use_ams: useAms,
     ams_mapping: String(useAms ? opts.tray : 0),
   });
+  startedAt = Date.now();
   return { name };
 }

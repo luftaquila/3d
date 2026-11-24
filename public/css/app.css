@@ -1109,3 +1109,9 @@ details.sub-collapse[open] > summary::before { content: '▾'; }
 .thumb-progress { aspect-ratio: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; color: var(--text-muted); font-size: 12px; padding: 8px; }
 .thumb-bar { display: block; width: 80%; height: 4px; border-radius: 2px; background: var(--border-light); overflow: hidden; }
 .thumb-bar > span { display: block; height: 100%; background: var(--accent); transition: width 150ms; }
+/* staged candidate choices and the quote's shared plate */
+.sd-cand.sd-cand-staged td { background: rgba(48, 209, 88, 0.18); }
+.sd-cand.sd-cand-staged td:first-child::after { content: ' 선택'; color: #30d158; font-weight: 600; }
+.sd-choose-bar { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--accent); border-radius: 6px; }
+.plate-block { margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--border-light); display: flex; flex-direction: column; gap: 4px; }
+.plate-block .btn { padding: 1px 8px; font-size: 11px; }

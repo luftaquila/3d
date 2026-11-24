@@ -47,6 +47,18 @@ export function enqueueSlices(db, fileIds, layout = null) {
   return n;
 }
 
+// Arrange all model files of a quote on shared plate(s) (layout: null for the
+// automatic packing, or the layout editor's placement).
+export function enqueuePlate(db, quoteId, layout = null) {
+  if (!slicerConfigured()) return 0;
+  const n = db.prepare(`
+    UPDATE quotes SET plate_status = 'pending', plate_requested_at = ?, plate_error = NULL, plate_layout = ?
+    WHERE id = ? AND deleted_at IS NULL AND (plate_status IS NULL OR plate_status IN ('done', 'failed'))
+  `).run(Date.now(), layout ? JSON.stringify(layout) : null, quoteId).changes;
+  if (n > 0) setImmediate(tick);
+  return n;
+}
+
 export async function removeSlices(quoteId, fileId) {
   const dir = slicesDir(quoteId, fileId);
   const base = path.resolve(config.dataDir, 'slices');
@@ -66,6 +78,7 @@ export function startSliceDispatcher(logger) {
   started = true;
   // A restart mid-job leaves rows 'running' forever; retry them.
   openDatabase().prepare("UPDATE quote_files SET slice_status = 'pending' WHERE slice_status = 'running'").run();
+  openDatabase().prepare("UPDATE quotes SET plate_status = 'pending' WHERE plate_status = 'running'").run();
   setInterval(tick, POLL_MS).unref();
   setImmediate(tick);
 }
@@ -117,42 +130,100 @@ function redo(json) {
   return saved.choose ? { choose: saved.choose } : { layout: saved };
 }
 
+// Next queued job, oldest request first: a file of a quote, or a quote's
+// shared plate (all its files arranged together, see enqueuePlate).
 async function runNext() {
   const db = openDatabase();
-  const row = db.prepare(`
+  const file = db.prepare(`
     SELECT qf.id, qf.quote_id AS quoteId, qf.filename, qf.file_path AS filePath,
-           qf.slice_layout AS layoutJson, q.answers_json AS answersJson
+           qf.slice_layout AS layoutJson, qf.slice_requested_at AS at, q.answers_json AS answersJson
     FROM quote_files qf JOIN quotes q ON q.id = qf.quote_id
     WHERE qf.slice_status = 'pending' AND qf.file_path IS NOT NULL AND qf.deleted_at IS NULL
     ORDER BY qf.slice_requested_at ASC
     LIMIT 1
   `).get();
-  if (!row) return false;
+  const plate = db.prepare(`
+    SELECT id AS quoteId, plate_layout AS layoutJson, plate_requested_at AS at
+    FROM quotes WHERE plate_status = 'pending' AND deleted_at IS NULL
+    ORDER BY plate_requested_at ASC LIMIT 1
+  `).get();
+  if (!file && !plate) return false;
+  return plate && (!file || plate.at < file.at) ? runJob(db, plateJob(db, plate)) : runJob(db, fileJob(db, file));
+}
 
-  db.prepare("UPDATE quote_files SET slice_status = 'running' WHERE id = ?").run(row.id);
+function fileJob(db, row) {
+  return {
+    key: row.id,
+    log: { fileId: row.id },
+    body: {
+      quoteId: row.quoteId,
+      fileId: row.id,
+      path: row.filePath,
+      filename: row.filename,
+      answers: resolveAnswers(db, row.answersJson),
+      ...redo(row.layoutJson),
+    },
+    setStatus: (status, onlyIfRunning) => db.prepare(
+      `UPDATE quote_files SET slice_status = ? WHERE id = ?${onlyIfRunning ? " AND slice_status = 'running'" : ''}`,
+    ).run(status, row.id),
+    // The file may have been deleted while slicing; don't resurrect its row,
+    // and drop the artifacts the worker just wrote for it.
+    finish: async (status, resultJson, error) => {
+      const upd = db.prepare(`
+        UPDATE quote_files SET slice_status = ?, slice_json = ?, slice_error = ?, sliced_at = ?
+        WHERE id = ? AND slice_status = 'running' AND deleted_at IS NULL
+      `).run(status, resultJson, error, Date.now(), row.id);
+      if (upd.changes === 0) await removeSlices(row.quoteId, row.id);
+    },
+  };
+}
+
+function plateJob(db, row) {
+  const files = db.prepare(`
+    SELECT id AS fileId, file_path AS path, filename FROM quote_files
+    WHERE quote_id = ? AND file_path IS NOT NULL AND deleted_at IS NULL
+    ORDER BY created_at ASC
+  `).all(row.quoteId);
+  return {
+    key: `plate:${row.quoteId}`,
+    log: { quoteId: row.quoteId, plate: true },
+    tooFew: files.length < 2,
+    body: { quoteId: row.quoteId, plate: { files }, ...(row.layoutJson ? { layout: JSON.parse(row.layoutJson) } : {}) },
+    setStatus: (status, onlyIfRunning) => db.prepare(
+      `UPDATE quotes SET plate_status = ? WHERE id = ?${onlyIfRunning ? " AND plate_status = 'running'" : ''}`,
+    ).run(status, row.quoteId),
+    finish: async (status, resultJson, error) => {
+      const upd = db.prepare(`
+        UPDATE quotes SET plate_status = ?, plate_json = ?, plate_error = ?, plated_at = ?
+        WHERE id = ? AND plate_status = 'running' AND deleted_at IS NULL
+      `).run(status, resultJson, error, Date.now(), row.quoteId);
+      if (upd.changes === 0) await removeSlices(row.quoteId, 'plate');
+    },
+  };
+}
+
+async function runJob(db, job) {
+  job.setStatus('running');
   const t0 = Date.now();
   let status = 'failed';
   let resultJson = null;
   let error = null;
+  if (job.tooFew) {
+    await job.finish('failed', null, '모델 파일이 2개 이상이어야 합칠 수 있습니다.');
+    return true;
+  }
   try {
     const res = await request(`${config.slicer.url}/slice`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        quoteId: row.quoteId,
-        fileId: row.id,
-        path: row.filePath,
-        filename: row.filename,
-        answers: resolveAnswers(db, row.answersJson),
-        ...redo(row.layoutJson),
-      }),
+      body: JSON.stringify(job.body),
       headersTimeout: SLICE_TIMEOUT_MS,
       bodyTimeout: SLICE_TIMEOUT_MS,
     });
     if (res.statusCode === 409) {
       // Worker busy (e.g. a manual run): put it back and retry next poll.
       await res.body.dump().catch(() => {});
-      db.prepare("UPDATE quote_files SET slice_status = 'pending' WHERE id = ?").run(row.id);
+      job.setStatus('pending', true);
       return false;
     }
     if (res.statusCode !== 200) {
@@ -166,25 +237,18 @@ async function runNext() {
   } catch (err) {
     error = String(err?.message || err);
     if (TRANSPORT_CODES.has(err?.code)) {
-      const n = (transportFailures.get(row.id) || 0) + 1;
+      const n = (transportFailures.get(job.key) || 0) + 1;
       if (n <= TRANSPORT_RETRIES) {
-        transportFailures.set(row.id, n);
-        db.prepare("UPDATE quote_files SET slice_status = 'pending' WHERE id = ? AND slice_status = 'running'").run(row.id);
-        log.warn({ fileId: row.id, code: err.code, attempt: n }, 'slicer: connection lost, requeued');
+        transportFailures.set(job.key, n);
+        job.setStatus('pending', true);
+        log.warn({ ...job.log, code: err.code, attempt: n }, 'slicer: connection lost, requeued');
         return false;
       }
       error = `슬라이서 연결이 끊겼습니다 (${err.code}, ${n}회)`;
     }
   }
-  transportFailures.delete(row.id);
-
-  // The file may have been deleted while slicing; don't resurrect its row,
-  // and drop the artifacts the worker just wrote for it.
-  const upd = db.prepare(`
-    UPDATE quote_files SET slice_status = ?, slice_json = ?, slice_error = ?, sliced_at = ?
-    WHERE id = ? AND slice_status = 'running' AND deleted_at IS NULL
-  `).run(status, resultJson, error, Date.now(), row.id);
-  if (upd.changes === 0) await removeSlices(row.quoteId, row.id);
-  log.info({ fileId: row.id, status, ms: Date.now() - t0, error }, 'slicer: job finished');
+  transportFailures.delete(job.key);
+  await job.finish(status, resultJson, error);
+  log.info({ ...job.log, status, ms: Date.now() - t0, error }, 'slicer: job finished');
   return true;
 }

@@ -384,3 +384,92 @@ def process(job):
     with open(os.path.join(out_dir, "result.json"), "w", encoding="utf-8") as fh:
         json.dump(result, fh, ensure_ascii=False, indent=1)
     return result
+
+
+def _file_orientation(info):
+    """Orientation (4x4, object frame) the file's own slicing settled on, plus
+    a label: an explored candidate, the rotation of a manual layout, or the
+    upload pose when the file was never explored (Bambu auto-orient files)."""
+    if info:
+        if info.get("chosen_by") == "manual" and info.get("bed_matrix"):
+            m = np.eye(4)
+            m[:3, :3] = np.array(info["bed_matrix"], dtype=float).reshape(4, 4)[:3, :3]
+            return m, "manual"
+        by_id = {c["id"]: c for c in info.get("candidates") or [] if c.get("transform")}
+        if info.get("chosen") in by_id:
+            return np.array(by_id[info["chosen"]]["transform"], dtype=float), info.get("chosen_by") or "score"
+    return np.eye(4), "upload"
+
+
+def process_plate(job):
+    """Put every object of several files of one quote on shared plate(s).
+
+    job: {out_dir, slices_dir, files: [{file_id, path, filename}], layout?}.
+    Each object keeps the orientation its file's own slicing chose (see
+    _file_orientation); Bambu Studio's arrange then packs them, over several
+    plates if needed. With layout, exactly that placement is sliced (the
+    layout editor works on the plate like on a single file).
+    """
+    started = time.time()
+    out_dir = job["out_dir"]
+    layout = job.get("layout")
+    shutil.rmtree(out_dir, ignore_errors=True)
+    os.makedirs(out_dir)
+
+    work = tempfile.mkdtemp(prefix="plate-")
+    result = {"version": 1, "kind": "plate", "warnings": [], "objects": [], "profiles": {},
+              "llm": {"used": False}, "mode": "plate", "files": []}
+    try:
+        objects = []
+        for n, f in enumerate(job["files"]):
+            try:
+                with open(os.path.join(job["slices_dir"], f["file_id"], "result.json"), encoding="utf-8") as fh:
+                    own = json.load(fh)
+            except (OSError, json.JSONDecodeError):
+                own = {}
+            own_infos = {o["index"]: o for o in own.get("objects", [])} if own.get("status") == "done" else {}
+            loaded, _source = _load_objects(f["path"], os.path.join(work, f"f{n}"), f["filename"])
+            result["files"].append({"file_id": f["file_id"], "filename": f["filename"], "objects": len(loaded),
+                                    "sliced": bool(own_infos)})
+            if not own_infos:
+                result["warnings"].append(f"{f['filename']}: not sliced on its own yet, using the upload orientation")
+            for obj in loaded:
+                k = len(objects) + 1
+                orient, source = _file_orientation(own_infos.get(obj["index"]))
+                name = f["filename"] if len(loaded) == 1 else f"{f['filename']} #{obj['index']}"
+                objects.append({"index": k, "name": name, "mesh": obj["mesh"], "flags": obj["flags"],
+                                "orient": orient})
+                info = _object_info(objects[-1])
+                info.update(file_id=f["file_id"], file_object=obj["index"], orientation=source)
+                own_info = own_infos.get(obj["index"]) or {}
+                if own_info.get("supports") == "everywhere":
+                    info["supports"] = "everywhere"
+                result["objects"].append(info)
+        if not objects:
+            raise bambu.SliceError("no objects to place")
+        _write_previews(objects, out_dir)
+
+        if layout:
+            plan, arrange, orient = _manual_plan(layout, objects, result)
+            for info in result["objects"]:
+                info["orientation"] = "manual"  # the editor's rotation replaces the file's
+        else:
+            plan = []
+            for obj, info in zip(objects, result["objects"]):
+                mesh, m = geometry.place(obj["mesh"], obj["orient"])
+                plan.append((obj, info, mesh, m))
+            arrange, orient = True, False
+        _final_slice(plan, arrange, orient, result, out_dir, work)
+        result["status"] = "done"
+    except bambu.SliceError as e:
+        result.update(status="failed", error=str(e), return_code=e.return_code)
+    except subprocess.TimeoutExpired as e:
+        result.update(status="failed", error=f"slicing timed out after {int(e.timeout)}s")
+    except Exception as e:  # keep the worker alive and report
+        result.update(status="failed", error=f"{type(e).__name__}: {e}")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    result["elapsed_s"] = round(time.time() - started, 1)
+    with open(os.path.join(out_dir, "result.json"), "w", encoding="utf-8") as fh:
+        json.dump(result, fh, ensure_ascii=False, indent=1)
+    return result

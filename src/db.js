@@ -141,6 +141,14 @@ function migrate(db) {
   if (!quoteCols.find((c) => c.name === 'comment')) {
     db.exec('ALTER TABLE quotes ADD COLUMN comment TEXT');
   }
+  // All model files of a quote arranged on shared plate(s) by the slicer
+  // worker (src/slicer.js enqueuePlate), and the last time that was printed.
+  if (!quoteCols.find((c) => c.name === 'plate_status')) {
+    for (const col of ['plate_status TEXT', 'plate_requested_at INTEGER', 'plated_at INTEGER', 'plate_json TEXT',
+      'plate_error TEXT', 'plate_layout TEXT', 'plate_print_sent_at INTEGER', 'plate_print_sent_json TEXT']) {
+      db.exec(`ALTER TABLE quotes ADD COLUMN ${col}`);
+    }
+  }
   const fileCols = db.prepare('PRAGMA table_info(quote_files)').all();
   if (!fileCols.find((c) => c.name === 'is_watertight')) {
     db.exec('ALTER TABLE quote_files ADD COLUMN is_watertight INTEGER');
