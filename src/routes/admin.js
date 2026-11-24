@@ -8,7 +8,7 @@ import { config } from '../config.js';
 import { isUlid, maskPhone } from '../log-utils.js';
 import { sendSms, sensConfigured, smsByteLength } from '../sens.js';
 import { sendAlimtalk, alimtalkConfigured, getAlimtalkTemplates } from '../alimtalk.js';
-import { enqueueSlices, removeSlices, slicerConfigured, slicesDir } from '../slicer.js';
+import { enqueuePlate, enqueueSlices, removeSlices, slicerConfigured, slicesDir } from '../slicer.js';
 import { printerConfigured, printerStatus, sendToPrinter } from '../printer.js';
 
 // Artifacts the slicer worker writes per file (see slicer/pipeline.py).
@@ -31,6 +31,28 @@ function sliceView(f) {
     manualLayout: !!f.sliceLayout && !parseSlice(f.sliceLayout)?.choose,
     result: parseSlice(f.sliceJson),
   } : null;
+}
+
+// Shared-plate state of a quote (camelCase aliases as selected above).
+function plateView(q) {
+  return q.plateStatus ? {
+    status: q.plateStatus,
+    requestedAt: q.plateRequestedAt,
+    slicedAt: q.platedAt,
+    error: q.plateError,
+    manualLayout: !!q.plateLayout,
+    result: parseSlice(q.plateJson),
+    printSent: q.platePrintSentAt ? { at: q.platePrintSentAt, ...parseSlice(q.platePrintSentJson) } : null,
+  } : null;
+}
+
+// The plate is built from the quote's files; changing them makes it stale.
+async function dropPlate(db, quoteId) {
+  db.prepare(`
+    UPDATE quotes SET plate_status = NULL, plate_json = NULL, plate_error = NULL, plate_layout = NULL
+    WHERE id = ? AND (plate_status IS NULL OR plate_status NOT IN ('pending', 'running'))
+  `).run(quoteId);
+  await removeSlices(quoteId, 'plate');
 }
 
 const FIELD_TYPES = new Set(['text', 'textarea', 'checkbox', 'notice']);
@@ -70,6 +92,9 @@ export default async function adminRoutes(app) {
              q.created_at AS createdAt, q.deleted_at AS deletedAt,
              q.filament_g AS filamentG, q.filament_m AS filamentM,
              q.cost, q.discount, q.final_cost AS finalCost, q.comment,
+             q.plate_status AS plateStatus, q.plate_requested_at AS plateRequestedAt, q.plated_at AS platedAt,
+             q.plate_json AS plateJson, q.plate_error AS plateError, q.plate_layout AS plateLayout,
+             q.plate_print_sent_at AS platePrintSentAt, q.plate_print_sent_json AS platePrintSentJson,
              NOT EXISTS (SELECT 1 FROM quotes q2 WHERE q2.user_id = q.user_id AND q2.created_at < q.created_at) AS isFirst,
              COALESCE(u.withdrawn_email, u.email) AS userEmail,
              u.name AS userName,
@@ -123,6 +148,7 @@ export default async function adminRoutes(app) {
         cost: q.cost,
         discount: q.discount,
         finalCost: q.finalCost,
+        plate: plateView(q),
         comment: q.comment,
         files: files.filter((f) => f.quoteId === q.id).map((f) => ({
           id: f.id,
@@ -469,6 +495,7 @@ export default async function adminRoutes(app) {
     `).run(Date.now(), fileId);
     // The sliced .gcode.3mf are derived from the model; remove them with it.
     await removeSlices(id, fileId);
+    await dropPlate(db, id);
     return { ok: true };
   });
 
@@ -476,9 +503,18 @@ export default async function adminRoutes(app) {
   // queued or running (so results show up without a reload).
   app.get('/api/admin/slices', { preHandler: requireAdmin }, async (req, reply) => {
     const ids = String(req.query.ids || '').split(',').filter(Boolean);
-    if (!ids.length || ids.length > 200 || !ids.every(isUlid)) {
+    const quoteIds = String(req.query.quotes || '').split(',').filter(Boolean);
+    if ((!ids.length && !quoteIds.length) || ids.length > 200 || quoteIds.length > 200
+      || !ids.every(isUlid) || !quoteIds.every(isUlid)) {
       return reply.code(400).send({ error: 'invalid ids' });
     }
+    const plates = quoteIds.length ? openDatabase().prepare(`
+      SELECT id, plate_status AS plateStatus, plate_requested_at AS plateRequestedAt, plated_at AS platedAt,
+             plate_json AS plateJson, plate_error AS plateError, plate_layout AS plateLayout,
+             plate_print_sent_at AS platePrintSentAt, plate_print_sent_json AS platePrintSentJson
+      FROM quotes WHERE id IN (${quoteIds.map(() => '?').join(',')})
+    `).all(...quoteIds).map((q) => ({ quoteId: q.id, plate: plateView(q) })) : [];
+    if (!ids.length) return { files: [], plates };
     const rows = openDatabase().prepare(`
       SELECT id, quote_id AS quoteId,
              slice_status AS sliceStatus, slice_requested_at AS sliceRequestedAt,
@@ -487,7 +523,7 @@ export default async function adminRoutes(app) {
       FROM quote_files
       WHERE id IN (${ids.map(() => '?').join(',')})
     `).all(...ids);
-    return { files: rows.map((f) => ({ id: f.id, quoteId: f.quoteId, slice: sliceView(f) })) };
+    return { files: rows.map((f) => ({ id: f.id, quoteId: f.quoteId, slice: sliceView(f) })), plates };
   });
 
   app.post('/api/admin/quotes/:id/files/:fileId/slice', {
@@ -647,10 +683,90 @@ export default async function adminRoutes(app) {
     }
   });
 
+  // ── Shared plate: all model files of a quote arranged together ──────────
+  function plateRow(db, id) {
+    return db.prepare(`
+      SELECT plate_status AS status, plate_json AS json,
+             (SELECT COUNT(*) FROM quote_files WHERE quote_id = quotes.id AND file_path IS NOT NULL AND deleted_at IS NULL) AS models
+      FROM quotes WHERE id = ? AND deleted_at IS NULL
+    `).get(id);
+  }
+
+  app.post('/api/admin/quotes/:id/plate', {
+    preHandler: [requireAdmin, requireCsrfHeader],
+  }, async (req, reply) => {
+    const { id } = req.params;
+    if (!isUlid(id)) return reply.code(400).send({ error: 'invalid id' });
+    if (!slicerConfigured()) return reply.code(503).send({ error: '슬라이서가 설정되지 않았습니다.' });
+    const db = openDatabase();
+    const row = plateRow(db, id);
+    if (!row) return reply.code(404).send({ error: 'not found' });
+    if (row.models < 2) return reply.code(409).send({ error: '모델 파일이 2개 이상이어야 합칠 수 있습니다.' });
+    if (row.status === 'pending' || row.status === 'running') {
+      return reply.code(409).send({ error: '이미 대기 중이거나 진행 중입니다.' });
+    }
+    let layout = null;
+    if (req.body?.layout) {
+      const objects = Array.isArray(req.body.layout.objects) ? req.body.layout.objects : null;
+      if (!objects || objects.length === 0 || objects.length > 500) return reply.code(400).send({ error: 'invalid layout' });
+      layout = { arrange: !!req.body.layout.arrange, objects: [] };
+      for (const o of objects) {
+        const index = Number(o?.index);
+        const matrix = Array.isArray(o?.matrix) ? o.matrix.map(Number) : [];
+        if (!Number.isInteger(index) || index < 1 || matrix.length !== 16 || !matrix.every(Number.isFinite)) {
+          return reply.code(400).send({ error: 'invalid layout' });
+        }
+        layout.objects.push({ index, matrix });
+      }
+    }
+    enqueuePlate(db, id, layout);
+    return { ok: true };
+  });
+
+  // Print the shared plate: every model file of the quote must be approved.
+  app.post('/api/admin/quotes/:id/plate/print', {
+    preHandler: [requireAdmin, requireCsrfHeader],
+  }, async (req, reply) => {
+    const { id } = req.params;
+    if (!isUlid(id)) return reply.code(400).send({ error: 'invalid id' });
+    if (!printerConfigured()) return reply.code(503).send({ error: '프린터 연동이 설정되지 않았습니다.' });
+    const { profile, plate, tray, bedLeveling, timelapse } = req.body || {};
+    if (!['0.20', '0.08'].includes(profile)) return reply.code(400).send({ error: 'invalid profile' });
+    const db = openDatabase();
+    const row = plateRow(db, id);
+    if (!row) return reply.code(404).send({ error: 'not found' });
+    const unapproved = db.prepare(`
+      SELECT COUNT(*) AS n FROM quote_files
+      WHERE quote_id = ? AND file_path IS NOT NULL AND deleted_at IS NULL AND COALESCE(print_decision, '') <> 'approved'
+    `).get(id).n;
+    if (unapproved) return reply.code(409).send({ error: `출력 승인되지 않은 파일이 ${unapproved}개 있습니다.` });
+    const sliced = row.status === 'done' ? parseSlice(row.json)?.profiles?.[profile] : null;
+    if (!sliced?.file) return reply.code(409).send({ error: '합친 슬라이싱 결과가 없습니다.' });
+    const plateNo = Number(plate) || 1;
+    if (!Number.isInteger(plateNo) || plateNo < 1 || plateNo > (Number(sliced.plates) || 1)) {
+      return reply.code(400).send({ error: 'invalid plate' });
+    }
+    if (!Number.isInteger(tray)) return reply.code(400).send({ error: 'invalid tray' });
+    try {
+      const { name } = await sendToPrinter({
+        quoteId: id, fileId: 'plate', filename: `견적${id.slice(-8)}_한판`, profile, plate: plateNo, tray,
+        bedLeveling: bedLeveling !== false, timelapse: !!timelapse,
+      });
+      const sent = { profile, plate: plateNo, tray, name };
+      db.prepare('UPDATE quotes SET plate_print_sent_at = ?, plate_print_sent_json = ? WHERE id = ?')
+        .run(Date.now(), JSON.stringify(sent), id);
+      req.log.info({ quoteId: id, plate: true, ...sent }, 'printer: job sent');
+      return { ok: true, ...sent };
+    } catch (err) {
+      req.log.warn({ quoteId: id, err: err?.message }, 'printer: send failed');
+      return reply.code(502).send({ error: String(err?.message || err) });
+    }
+  });
+
   app.get('/slices/:quoteId/:fileId/*', { preHandler: requireAdmin }, async (req, reply) => {
     const { quoteId, fileId } = req.params;
     const name = req.params['*'];
-    if (!isUlid(quoteId) || !isUlid(fileId) || !SLICE_ARTIFACT.test(name)) {
+    if (!isUlid(quoteId) || !(isUlid(fileId) || fileId === 'plate') || !SLICE_ARTIFACT.test(name)) {
       return reply.code(400).send('invalid');
     }
     const file = path.join(slicesDir(quoteId, fileId), name);
@@ -658,8 +774,8 @@ export default async function adminRoutes(app) {
     if (name.endsWith('.stl')) {
       reply.header('content-type', 'application/octet-stream');
     } else {
-      const row = openDatabase().prepare('SELECT filename FROM quote_files WHERE id = ?').get(fileId);
-      const base = (row?.filename || fileId).replace(/\.(stl|3mf)$/i, '');
+      const row = fileId === 'plate' ? null : openDatabase().prepare('SELECT filename FROM quote_files WHERE id = ?').get(fileId);
+      const base = fileId === 'plate' ? `견적${quoteId.slice(-8)}_한판` : (row?.filename || fileId).replace(/\.(stl|3mf)$/i, '');
       reply.header('content-type', 'application/octet-stream');
       reply.header('content-disposition', `attachment; filename*=UTF-8''${encodeURIComponent(`${base}_${path.basename(name)}`)}`);
     }

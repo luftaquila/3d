@@ -4,6 +4,7 @@ import math
 
 import numpy as np
 import trimesh
+from scipy.spatial import Delaunay
 
 import matplotlib
 matplotlib.use("Agg")
@@ -50,23 +51,66 @@ def _down_vector(transform):
     return transform[:3, :3].T @ np.array([0.0, 0.0, -1.0])
 
 
+# trimesh's compute_stable_poses never returned on some thin, flat parts (a
+# 171x177x2mm plate hung for 20+ minutes), which would block the worker. Poses
+# are found directly instead: group the convex hull's faces into planes; a
+# plane is a stable resting face when the centre of mass projects inside it.
+POSE_PLANE_TOL_MM = 0.05
+
+
+POSE_CHECK_PLANES = 40  # only the largest planes can be among the candidates
+
+
+def _resting_faces(mesh):
+    """[(down normal, area)] of stable resting planes, largest first."""
+    hull = mesh.convex_hull
+    com = mesh.center_mass if mesh.is_watertight else hull.center_mass
+    normals, areas = hull.face_normals, hull.area_faces
+    _, inverse = np.unique(np.round(normals, 3), axis=0, return_inverse=True)
+    inverse = inverse.reshape(-1)
+    group_area = np.bincount(inverse, weights=areas)
+    group_vec = np.zeros((len(group_area), 3))
+    np.add.at(group_vec, inverse, normals * areas[:, None])
+    out = []
+    pts = hull.vertices
+    for g in np.argsort(-group_area)[:POSE_CHECK_PLANES]:
+        n = group_vec[g] / (np.linalg.norm(group_vec[g]) or 1.0)
+        # points of the hull lying on this supporting plane
+        d = pts @ n
+        on = pts[d >= d.max() - POSE_PLANE_TOL_MM]
+        if len(on) < 3:
+            continue
+        # 2D frame in the plane, then: is the COM's projection inside?
+        u = np.cross(n, [1.0, 0.0, 0.0] if abs(n[0]) < 0.9 else [0.0, 1.0, 0.0])
+        u /= np.linalg.norm(u)
+        v = np.cross(n, u)
+        poly = np.column_stack([on @ u, on @ v])
+        c = np.array([com @ u, com @ v])
+        try:
+            if not Delaunay(poly).find_simplex(c) >= 0:
+                continue
+        except Exception:  # degenerate (collinear) outline
+            continue
+        out.append((n, float(group_area[g])))
+    return out
+
+
 def candidates(mesh, max_n=6):
-    """Original placement plus the most probable stable poses, de-duplicated."""
+    """Original placement plus the largest stable resting faces, de-duplicated."""
     out = [("original", np.eye(4))]
     try:
-        com = mesh.center_mass if mesh.is_watertight else mesh.convex_hull.center_mass
-        transforms, _probs = mesh.compute_stable_poses(center_mass=com, n_samples=1)
+        faces = _resting_faces(mesh)
     except Exception:
-        transforms = []
+        faces = []
     seen = [_down_vector(np.eye(4))]
-    for t in transforms:
+    for n, _area in faces:
         if len(out) >= max_n:
             break
-        d = _down_vector(t)
-        if any(float(np.dot(d, s)) > 0.995 for s in seen):
+        if any(float(np.dot(n, s)) > 0.995 for s in seen):
             continue
-        seen.append(d)
-        out.append(("stable", np.array(t)))
+        seen.append(n)
+        # rotate so that n (the face's outward normal) points down at the bed
+        out.append(("stable", trimesh.geometry.align_vectors(n, [0.0, 0.0, -1.0])))
     return out
 
 
