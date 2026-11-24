@@ -1,0 +1,62 @@
+{
+    "bridge_speed": [
+        "80",
+        "nil"
+    ],
+    "detect_thin_wall": "1",
+    "enable_support": "1",
+    "from": "User",
+    "infill_wall_overlap": "5%",
+    "inherits": "0.20mm Standard @BBL X1C",
+    "inner_wall_speed": [
+        "200",
+        "nil"
+    ],
+    "ironing_flow": "20%",
+    "name": "0.20mm Custom",
+    "outer_wall_speed": [
+        "100",
+        "nil"
+    ],
+    "overhang_2_4_speed": [
+        "40",
+        "nil"
+    ],
+    "overhang_4_4_speed": [
+        "20",
+        "nil"
+    ],
+    "overhang_totally_speed": [
+        "20",
+        "nil"
+    ],
+    "prime_tower_brim_width": "-1",
+    "prime_tower_infill_gap": "100%",
+    "prime_tower_rib_wall": "0",
+    "prime_tower_width": "20",
+    "print_extruder_id": [
+        "1",
+        "1"
+    ],
+    "print_extruder_variant": [
+        "Direct Drive Standard",
+        "Direct Drive High Flow"
+    ],
+    "print_settings_id": "0.20mm Custom",
+    "seam_position": "back",
+    "skeleton_infill_density": "5%",
+    "skin_infill_density": "5%",
+    "sparse_infill_density": "5%",
+    "sparse_infill_pattern": "adaptivecubic",
+    "support_on_build_plate_only": "1",
+    "support_remove_small_overhang": "0",
+    "top_surface_line_width": "0.5",
+    "top_surface_pattern": "monotonic",
+    "top_surface_speed": [
+        "80",
+        "nil"
+    ],
+    "version": "2.1.0.18",
+    "wall_generator": "arachne",
+    "wall_sequence": "inner-outer-inner wall"
+}

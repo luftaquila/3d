@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import path from 'node:path';
 import { ulid } from 'ulid';
 import { requireAdmin, requireCsrfHeader } from '../auth.js';
@@ -7,6 +8,29 @@ import { config } from '../config.js';
 import { isUlid, maskPhone } from '../log-utils.js';
 import { sendSms, sensConfigured, smsByteLength } from '../sens.js';
 import { sendAlimtalk, alimtalkConfigured, getAlimtalkTemplates } from '../alimtalk.js';
+import { enqueueSlices, removeSlices, slicerConfigured, slicesDir } from '../slicer.js';
+import { printerConfigured, printerStatus, sendToPrinter } from '../printer.js';
+
+// Artifacts the slicer worker writes per file (see slicer/pipeline.py).
+const SLICE_ARTIFACT = /^(0\.(20|08)\.gcode\.3mf|candidates\/obj-\d{1,3}-[A-Z]\.gcode\.3mf|preview\/obj-\d{1,3}\.stl)$/;
+const PRINT_DECISIONS = new Set(['approved', 'hold']);
+
+function parseSlice(json) {
+  if (!json) return null;
+  try { return JSON.parse(json); } catch { return null; }
+}
+
+// Slice state of a quote_files row (camelCase aliases as selected below).
+function sliceView(f) {
+  return f.sliceStatus ? {
+    status: f.sliceStatus,
+    requestedAt: f.sliceRequestedAt,
+    slicedAt: f.slicedAt,
+    error: f.sliceError,
+    manualLayout: !!f.sliceLayout,
+    result: parseSlice(f.sliceJson),
+  } : null;
+}
 
 const FIELD_TYPES = new Set(['text', 'textarea', 'checkbox', 'notice']);
 
@@ -61,7 +85,12 @@ export default async function adminRoutes(app) {
              boundary_edges AS boundaryEdges,
              non_manifold_edges AS nonManifoldEdges,
              volume_mm3 AS volumeMm3,
-             surface_area_mm2 AS surfaceAreaMm2
+             surface_area_mm2 AS surfaceAreaMm2,
+             slice_status AS sliceStatus, slice_requested_at AS sliceRequestedAt,
+             sliced_at AS slicedAt, slice_json AS sliceJson, slice_error AS sliceError,
+             slice_layout AS sliceLayout,
+             print_decision AS printDecision, print_note AS printNote, decided_at AS decidedAt,
+             print_sent_at AS printSentAt, print_sent_json AS printSentJson
       FROM quote_files
       WHERE quote_id IN (${rows.map(() => '?').join(',') || "''"})
       ORDER BY created_at ASC
@@ -73,6 +102,8 @@ export default async function adminRoutes(app) {
     `).all();
 
     return {
+      slicerEnabled: slicerConfigured(),
+      printerEnabled: printerConfigured(),
       users: allUsers.map((u) => ({ email: u.email, name: u.name ?? '' })),
       quotes: rows.map((q) => ({
         id: q.id,
@@ -106,6 +137,11 @@ export default async function adminRoutes(app) {
           nonManifoldEdges: f.nonManifoldEdges ?? null,
           volumeMm3: f.volumeMm3 ?? null,
           surfaceAreaMm2: f.surfaceAreaMm2 ?? null,
+          slice: sliceView(f),
+          printDecision: f.printDecision ?? null,
+          printNote: f.printNote ?? '',
+          decidedAt: f.decidedAt ?? null,
+          printSent: f.printSentAt ? { at: f.printSentAt, ...parseSlice(f.printSentJson) } : null,
         })),
       })),
     };
@@ -128,6 +164,7 @@ export default async function adminRoutes(app) {
       const d = path.join(config.dataDir, sub, id);
       if (insideDataDir(d)) { try { await fs.rmdir(d); } catch {} }
     }
+    await removeSlices(id);
     return { ok: true };
   });
 
@@ -429,7 +466,163 @@ export default async function adminRoutes(app) {
     db.prepare(`
       UPDATE quote_files SET file_path = NULL, thumb_path = NULL, deleted_at = ? WHERE id = ?
     `).run(Date.now(), fileId);
+    // The sliced .gcode.3mf are derived from the model; remove them with it.
+    await removeSlices(id, fileId);
     return { ok: true };
+  });
+
+  // Slice state of a few files, polled by the admin page while any of them is
+  // queued or running (so results show up without a reload).
+  app.get('/api/admin/slices', { preHandler: requireAdmin }, async (req, reply) => {
+    const ids = String(req.query.ids || '').split(',').filter(Boolean);
+    if (!ids.length || ids.length > 200 || !ids.every(isUlid)) {
+      return reply.code(400).send({ error: 'invalid ids' });
+    }
+    const rows = openDatabase().prepare(`
+      SELECT id, quote_id AS quoteId,
+             slice_status AS sliceStatus, slice_requested_at AS sliceRequestedAt,
+             sliced_at AS slicedAt, slice_json AS sliceJson, slice_error AS sliceError,
+             slice_layout AS sliceLayout
+      FROM quote_files
+      WHERE id IN (${ids.map(() => '?').join(',')})
+    `).all(...ids);
+    return { files: rows.map((f) => ({ id: f.id, quoteId: f.quoteId, slice: sliceView(f) })) };
+  });
+
+  app.post('/api/admin/quotes/:id/files/:fileId/slice', {
+    preHandler: [requireAdmin, requireCsrfHeader],
+  }, async (req, reply) => {
+    const { id, fileId } = req.params;
+    if (!isUlid(id) || !isUlid(fileId)) return reply.code(400).send({ error: 'invalid id' });
+    if (!slicerConfigured()) return reply.code(503).send({ error: '슬라이서가 설정되지 않았습니다.' });
+    const db = openDatabase();
+    const row = db.prepare(`
+      SELECT slice_status AS status, file_path AS filePath, deleted_at AS deletedAt
+      FROM quote_files WHERE id = ? AND quote_id = ?
+    `).get(fileId, id);
+    if (!row) return reply.code(404).send({ error: 'not found' });
+    if (!row.filePath || row.deletedAt) return reply.code(410).send({ error: '원본 파일이 없습니다.' });
+    if (row.status === 'pending' || row.status === 'running') {
+      return reply.code(409).send({ error: '이미 슬라이싱 대기 중이거나 진행 중입니다.' });
+    }
+    enqueueSlices(db, [fileId]);
+    return { ok: true };
+  });
+
+  // Re-slice with the placement chosen in the web layout editor.
+  app.post('/api/admin/quotes/:id/files/:fileId/layout', {
+    preHandler: [requireAdmin, requireCsrfHeader],
+  }, async (req, reply) => {
+    const { id, fileId } = req.params;
+    if (!isUlid(id) || !isUlid(fileId)) return reply.code(400).send({ error: 'invalid id' });
+    if (!slicerConfigured()) return reply.code(503).send({ error: '슬라이서가 설정되지 않았습니다.' });
+    const body = req.body || {};
+    const objects = Array.isArray(body.objects) ? body.objects : null;
+    if (!objects || objects.length === 0 || objects.length > 500) return reply.code(400).send({ error: 'invalid layout' });
+    const layout = { arrange: !!body.arrange, objects: [] };
+    for (const o of objects) {
+      const index = Number(o?.index);
+      const matrix = Array.isArray(o?.matrix) ? o.matrix.map(Number) : [];
+      if (!Number.isInteger(index) || index < 1 || matrix.length !== 16 || !matrix.every(Number.isFinite)) {
+        return reply.code(400).send({ error: 'invalid layout' });
+      }
+      layout.objects.push({ index, matrix });
+    }
+    const db = openDatabase();
+    const row = db.prepare(`
+      SELECT slice_status AS status, file_path AS filePath, deleted_at AS deletedAt
+      FROM quote_files WHERE id = ? AND quote_id = ?
+    `).get(fileId, id);
+    if (!row) return reply.code(404).send({ error: 'not found' });
+    if (!row.filePath || row.deletedAt) return reply.code(410).send({ error: '원본 파일이 없습니다.' });
+    if (row.status === 'pending' || row.status === 'running') {
+      return reply.code(409).send({ error: '이미 슬라이싱 대기 중이거나 진행 중입니다.' });
+    }
+    enqueueSlices(db, [fileId], layout);
+    return { ok: true };
+  });
+
+  app.put('/api/admin/quotes/:id/files/:fileId/decision', {
+    preHandler: [requireAdmin, requireCsrfHeader],
+  }, async (req, reply) => {
+    const { id, fileId } = req.params;
+    if (!isUlid(id) || !isUlid(fileId)) return reply.code(400).send({ error: 'invalid id' });
+    const { decision, note } = req.body || {};
+    if (decision !== null && !PRINT_DECISIONS.has(decision)) return reply.code(400).send({ error: 'invalid decision' });
+    const res = openDatabase().prepare(`
+      UPDATE quote_files SET print_decision = ?, print_note = ?, decided_at = ?
+      WHERE id = ? AND quote_id = ?
+    `).run(decision, String(note ?? '').slice(0, 1000), decision ? Date.now() : null, fileId, id);
+    if (res.changes === 0) return reply.code(404).send({ error: 'not found' });
+    return { ok: true };
+  });
+
+  app.get('/api/admin/printer', { preHandler: requireAdmin }, async () => {
+    try {
+      return await printerStatus();
+    } catch (err) {
+      return { configured: true, error: String(err?.message || err) };
+    }
+  });
+
+  // Upload the sliced project to the printer and start it. Only for files the
+  // admin approved for printing; the UI also asks to confirm the plate is clear.
+  app.post('/api/admin/quotes/:id/files/:fileId/print', {
+    preHandler: [requireAdmin, requireCsrfHeader],
+  }, async (req, reply) => {
+    const { id, fileId } = req.params;
+    if (!isUlid(id) || !isUlid(fileId)) return reply.code(400).send({ error: 'invalid id' });
+    if (!printerConfigured()) return reply.code(503).send({ error: '프린터 연동이 설정되지 않았습니다.' });
+    const { profile, plate, tray, bedLeveling, timelapse } = req.body || {};
+    if (!['0.20', '0.08'].includes(profile)) return reply.code(400).send({ error: 'invalid profile' });
+    const db = openDatabase();
+    const row = db.prepare(`
+      SELECT filename, slice_status AS sliceStatus, slice_json AS sliceJson, print_decision AS printDecision
+      FROM quote_files WHERE id = ? AND quote_id = ? AND deleted_at IS NULL
+    `).get(fileId, id);
+    if (!row) return reply.code(404).send({ error: 'not found' });
+    if (row.printDecision !== 'approved') return reply.code(409).send({ error: '출력 승인된 파일만 보낼 수 있습니다.' });
+    const sliced = row.sliceStatus === 'done' ? parseSlice(row.sliceJson)?.profiles?.[profile] : null;
+    if (!sliced?.file) return reply.code(409).send({ error: '슬라이싱 결과가 없습니다.' });
+    const plateNo = Number(plate) || 1;
+    if (!Number.isInteger(plateNo) || plateNo < 1 || plateNo > (Number(sliced.plates) || 1)) {
+      return reply.code(400).send({ error: 'invalid plate' });
+    }
+    if (!Number.isInteger(tray)) return reply.code(400).send({ error: 'invalid tray' });
+    try {
+      const { name } = await sendToPrinter({
+        quoteId: id, fileId, filename: row.filename, profile, plate: plateNo, tray,
+        bedLeveling: bedLeveling !== false, timelapse: !!timelapse,
+      });
+      const sent = { profile, plate: plateNo, tray, name };
+      db.prepare('UPDATE quote_files SET print_sent_at = ?, print_sent_json = ? WHERE id = ?')
+        .run(Date.now(), JSON.stringify(sent), fileId);
+      req.log.info({ fileId, ...sent }, 'printer: job sent');
+      return { ok: true, ...sent };
+    } catch (err) {
+      req.log.warn({ fileId, err: err?.message }, 'printer: send failed');
+      return reply.code(502).send({ error: String(err?.message || err) });
+    }
+  });
+
+  app.get('/slices/:quoteId/:fileId/*', { preHandler: requireAdmin }, async (req, reply) => {
+    const { quoteId, fileId } = req.params;
+    const name = req.params['*'];
+    if (!isUlid(quoteId) || !isUlid(fileId) || !SLICE_ARTIFACT.test(name)) {
+      return reply.code(400).send('invalid');
+    }
+    const file = path.join(slicesDir(quoteId, fileId), name);
+    try { await fs.access(file); } catch { return reply.code(404).send('not found'); }
+    if (name.endsWith('.stl')) {
+      reply.header('content-type', 'application/octet-stream');
+    } else {
+      const row = openDatabase().prepare('SELECT filename FROM quote_files WHERE id = ?').get(fileId);
+      const base = (row?.filename || fileId).replace(/\.(stl|3mf)$/i, '');
+      reply.header('content-type', 'application/octet-stream');
+      reply.header('content-disposition', `attachment; filename*=UTF-8''${encodeURIComponent(`${base}_${path.basename(name)}`)}`);
+    }
+    reply.header('cache-control', 'private, max-age=0, no-store');
+    return reply.send(fsSync.createReadStream(file));
   });
 
   app.get('/api/admin/form-fields', { preHandler: requireAdmin }, async () => {

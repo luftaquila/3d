@@ -590,7 +590,7 @@ async function renderQuotesAdmin() {
   // AlimTalk 템플릿은 외부 NCP API(템플릿당 추가 호출, N+1)라 느리고 간헐적이다.
   // 견적 목록 렌더를 여기에 묶지 말 것 — 빠른 로컬 데이터만 기다려 먼저 그리고,
   // 알림톡은 백그라운드로 받아 채널 옵션을 나중에 끼워 넣는다.
-  const [{ quotes, users: allUsers }, { fields }, settingsRes] = await Promise.all([
+  const [{ quotes, users: allUsers, slicerEnabled: slicerOn, printerEnabled: printerOn }, { fields }, settingsRes] = await Promise.all([
     api('/api/admin/quotes'),
     api('/api/form-fields'),
     api('/api/admin/settings'),
@@ -602,6 +602,8 @@ async function renderQuotesAdmin() {
   messageChannel = settings.message_channel === 'alimtalk' ? 'alimtalk' : 'sms';
   smsSubmitEnabled = settings.sms_submit_enabled === '1';
   estPricePerM = Number(settings.est_price_per_m) || 500;
+  slicerEnabled = !!slicerOn;
+  printerEnabled = !!printerOn;
   const fieldMap = new Map(fields.map((f) => [f.id, f]));
 
   const users = allUsers.sort((a, b) => a.email.localeCompare(b.email));
@@ -645,6 +647,8 @@ async function renderQuotesAdmin() {
   searchEl.addEventListener('input', applyFilters);
   userEl.addEventListener('change', applyFilters);
   applyFilters();
+  slicePollQuotes = quotes;
+  startSlicePoll();
 
   // 느린 외부(NCP) 호출은 목록을 다 그린 뒤 백그라운드로. 도착하면 이미 그려진
   // 각 행의 채널 셀렉터에 알림톡 옵션을 끼워 넣고(편집 중인 입력은 건드리지 않음),
@@ -734,6 +738,7 @@ function numVal(v) { return v === null || v === undefined ? '' : v; }
 function renderQuoteCalc(q) {
   return `
     <div class="quote-calc" data-qid="${q.id}">
+      ${renderSliceTotals(q)}
       <div class="quote-calc-grid">
         <label>필라멘트 (m)<input type="number" step="0.01" min="0" data-calc="filamentM" value="${numVal(q.filamentM)}"></label>
         <label>비용 (원)<input type="number" step="1" min="0" data-calc="cost" value="${numVal(q.cost)}"></label>
@@ -773,6 +778,7 @@ function renderAdminFileCard(qid, f, hidden) {
         ${fmtBytes(f.sizeBytes)}
         ${f.hasModel ? '' : ' · <span class="error">원본 삭제됨</span>'}
       </div>
+      ${renderSliceLine(qid, f)}
       <div class="card-actions" onclick="event.stopPropagation()">
         ${f.hasModel && f.stlUrl ? `<a class="btn accent" href="${f.stlUrl}" download style="padding:2px 8px;font-size:11px;">다운로드</a>` : ''}
         ${f.hasModel ? `<button class="btn danger del-model" data-qid="${qid}" data-fid="${f.id}" style="padding:2px 8px;font-size:11px;">삭제</button>` : ''}
@@ -837,6 +843,7 @@ function wireAdminQuote(q) {
     });
   });
 
+  wireSlice(q);
   wireQuoteCalc(q);
 }
 
@@ -902,6 +909,8 @@ let printEtaText = '';        // in-progress print ETA "DD일 HH:MM" (24h) for {
 let alimtalkAvailable = false; // AlimTalk (Biz Message) configured server-side
 let alimTemplates = {};        // id -> { label, content, code } — AlimTalk set (separate from SMS)
 let alimTemplateOrder = [];
+let slicerEnabled = false;    // auto-slicing worker configured server-side (SLICER_URL)
+let printerEnabled = false;   // sending to the printer (slicer worker + Home Assistant)
 
 // Message templates are a free-form list (title + content) stored as JSON in
 // settings.sms_done_list. Falls back to migrating the legacy fixed slots.
@@ -1153,4 +1162,486 @@ function wireQuoteCalc(q) {
       btn.disabled = false;
     }
   });
+}
+
+// ── Auto-slicing (slicer worker) ────────────────────────────────────────────
+
+const SLICE_PROFILES = ['0.20', '0.08'];
+
+// Estimated cost from sliced filament length, the same way the quote form
+// derives 비용 from 필라멘트 (m): meters × price per meter, floored to 100 won.
+function sliceCost(meters) {
+  const m = Number(meters);
+  if (meters == null || !Number.isFinite(m)) return null;
+  return Math.max(0, Math.floor((m * estPricePerM) / 100) * 100);
+}
+const wonText = (v) => (v == null ? '-' : `${fmtWon(v)}원`);
+
+function fmtDur(sec) {
+  const s = Math.max(0, Math.round(Number(sec) || 0));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return h ? `${h}시간 ${m}분` : `${m}분`;
+}
+
+function renderSliceLine(qid, f) {
+  const s = f.slice;
+  const btn = (cls, label) => `<button class="btn ghost ${cls}" data-qid="${qid}" data-fid="${f.id}" style="padding:1px 6px;font-size:11px;">${label}</button>`;
+  if (!s) {
+    return slicerEnabled && f.hasModel
+      ? `<div class="slice-line" onclick="event.stopPropagation()">${btn('slice-run', '슬라이싱')}</div>`
+      : '';
+  }
+  let body;
+  if (s.status === 'pending') body = '<span class="muted">슬라이싱 대기</span>';
+  else if (s.status === 'running') body = '<span class="muted">슬라이싱 중…</span>';
+  else if (s.status === 'failed') body = `<span class="error" title="${escapeAttr(s.error || '')}">슬라이싱 실패</span>`;
+  else {
+    const prof = s.result?.profiles || {};
+    const objs = s.result?.objects || [];
+    const how = objs.some((o) => o.chosen_by === 'manual') ? '수동 배치'
+      : objs.some((o) => o.chosen_by === 'llm') ? 'LLM 선택' : '';
+    // one aligned row per profile: name, time, cost (no run-on lists)
+    body = `<div class="sl-grid">${SLICE_PROFILES.map((k) => {
+      const p = prof[k];
+      return `<span class="sl-k">${k}</span><span>${p ? fmtDur(p.time_s) : '-'}</span><span>${p ? wonText(sliceCost(p.meters)) : ''}</span>`;
+    }).join('')}</div>`
+      + (how ? `<div class="muted">방향: ${how}</div>` : '');
+  }
+  if (f.printDecision) {
+    body += `<div><span class="tag ${f.printDecision === 'approved' ? 'tag-approved' : 'tag-hold'}" title="${escapeAttr(f.printNote || '')}">${f.printDecision === 'approved' ? '출력 승인' : '출력 보류'}</span></div>`;
+  }
+  const actions = [];
+  if (s.status === 'done' || s.status === 'failed') {
+    if (s.result) actions.push(btn('slice-detail', '상세'));
+    if (slicerEnabled && f.hasModel) actions.push(btn('slice-run', '재실행'));
+  }
+  return `<div class="slice-line" onclick="event.stopPropagation()">${body}${actions.length ? `<div class="row" style="gap:4px;margin-top:2px;">${actions.join('')}</div>` : ''}</div>`;
+}
+
+function renderSliceTotals(q) {
+  const withSlice = q.files.filter((f) => f.slice);
+  if (!withSlice.length) return '';
+  const done = withSlice.filter((f) => f.slice.status === 'done' && f.slice.result?.profiles);
+  const notDone = q.files.filter((f) => f.hasModel).length - done.length;
+  const rows = SLICE_PROFILES.map((k) => {
+    const ps = done.map((f) => f.slice.result.profiles[k]).filter(Boolean);
+    if (!ps.length) return '';
+    const sum = (key) => ps.reduce((a, p) => a + (Number(p[key]) || 0), 0);
+    const meters = Math.round(sum('meters') * 100) / 100;
+    return `<span class="sl-k">${k}</span><span>${fmtDur(sum('time_s'))}</span><span>${sum('grams').toFixed(1)}g</span><span>${meters}m</span><span class="sl-cost">${wonText(sliceCost(meters))}</span>
+      <button class="btn ghost slice-apply" data-qid="${q.id}" data-m="${meters}">m 적용</button>`;
+  }).join('');
+  return `<div class="slice-totals small">
+    <strong>슬라이싱 합계</strong>${notDone > 0 ? ` <span class="muted">(${notDone}개 파일 미완료)</span>` : ''}
+    ${rows ? `<div class="st-grid">${rows}</div>` : '<div class="muted">완료된 결과 없음</div>'}
+  </div>`;
+}
+
+// While any file is queued or running, poll its state and update just that
+// card (and the quote's totals) in place, so edits elsewhere are kept.
+const SLICE_POLL_MS = 5000;
+let slicePollQuotes = [];
+let slicePollTimer = null;
+const SLICE_ACTIVE = new Set(['pending', 'running']);
+
+function startSlicePoll() {
+  if (!slicePollTimer) slicePollTimer = setInterval(pollSlices, SLICE_POLL_MS);
+}
+
+function stopSlicePoll() {
+  clearInterval(slicePollTimer);
+  slicePollTimer = null;
+}
+
+async function pollSlices() {
+  if (!document.getElementById('quotes-panel')) { stopSlicePoll(); return; }
+  if (document.hidden) return;
+  const active = slicePollQuotes.flatMap((q) => q.files
+    .filter((f) => SLICE_ACTIVE.has(f.slice?.status))
+    .map((f) => ({ q, f })));
+  if (!active.length) { stopSlicePoll(); return; }
+  let res;
+  try {
+    res = await api(`/api/admin/slices?ids=${active.map((a) => a.f.id).join(',')}`);
+  } catch { return; } // try again next tick
+  for (const row of res.files) {
+    const a = active.find((x) => x.f.id === row.id);
+    if (!a || !row.slice) continue;
+    if (row.slice.status === a.f.slice.status && row.slice.slicedAt === a.f.slice.slicedAt) continue;
+    a.f.slice = row.slice;
+    refreshSliceUi(a.q, a.f);
+    if (row.slice.status === 'done') toast(`슬라이싱 완료: ${a.f.filename}`, 'success');
+    else if (row.slice.status === 'failed') toast(`슬라이싱 실패: ${a.f.filename}`, 'error');
+  }
+}
+
+function refreshSliceUi(q, f) {
+  const card = document.querySelector(`.file-card[data-fid="${f.id}"]`);
+  if (card) {
+    const html = renderSliceLine(q.id, f);
+    const line = card.querySelector('.slice-line');
+    if (line) line.outerHTML = html;
+    else card.querySelector('.card-actions')?.insertAdjacentHTML('beforebegin', html);
+  }
+  const calc = document.querySelector(`.quote-calc[data-qid="${q.id}"]`);
+  if (calc) {
+    const html = renderSliceTotals(q);
+    const totals = calc.querySelector('.slice-totals');
+    if (totals) totals.outerHTML = html;
+    else if (html) calc.insertAdjacentHTML('afterbegin', html);
+  }
+  wireSlice(q);
+}
+
+function markSliceQueued(q, f) {
+  f.slice = { ...(f.slice || {}), status: 'pending', error: null };
+  refreshSliceUi(q, f);
+  startSlicePoll();
+}
+
+// Safe to call again after a partial re-render: each button is wired once.
+function wireSlice(q) {
+  const once = (b) => (b.dataset.wired ? false : (b.dataset.wired = '1'));
+  document.querySelectorAll(`.slice-run[data-qid="${q.id}"]`).forEach((b) => {
+    if (!once(b)) return;
+    b.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const f = q.files.find((x) => x.id === b.dataset.fid);
+      try {
+        await api(`/api/admin/quotes/${q.id}/files/${b.dataset.fid}/slice`, { method: 'POST' });
+        toast('슬라이싱 대기열에 추가했습니다. 끝나면 자동으로 표시됩니다.', 'success');
+        if (f) markSliceQueued(q, f); else renderQuotesAdmin();
+      } catch (err) { toast(err.message, 'error'); }
+    });
+  });
+  document.querySelectorAll(`.slice-detail[data-qid="${q.id}"]`).forEach((b) => {
+    if (!once(b)) return;
+    b.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const f = q.files.find((x) => x.id === b.dataset.fid);
+      if (!f?.slice?.result) return;
+      openSliceDetail(q, f);
+    });
+  });
+  const calcEl = document.querySelector(`.quote-calc[data-qid="${q.id}"]`);
+  calcEl?.querySelectorAll('.slice-apply').forEach((b) => {
+    if (!once(b)) return;
+    b.addEventListener('click', () => {
+      const mEl = calcEl.querySelector('[data-calc="filamentM"]');
+      if (!mEl) return;
+      mEl.value = b.dataset.m;
+      mEl.dispatchEvent(new Event('input', { bubbles: true }));
+      toast('필라멘트(m)에 적용했습니다. 견적 저장을 눌러 저장하세요.', 'info');
+    });
+  });
+}
+
+// Slice detail: one screen with the 3D view (0.20 / 0.08 preview, an
+// explored candidate, or the layout editor) and a side panel with the
+// numbers, candidates and the print decision.
+async function openSliceDetail(q, f) {
+  const viewer = await import('../viewer.js');
+  const { host, close } = viewer.openViewerModal();
+  const r = f.slice.result;
+  const base = `/slices/${q.id}/${f.id}`;
+  const canEdit = slicerEnabled && f.hasModel && (r.objects || []).length > 0
+    && (r.objects || []).every((o) => o.preview);
+  const profiles = SLICE_PROFILES.filter((k) => r.profiles?.[k]?.file);
+  const tabs = [
+    ...profiles.map((k) => ({ id: `p:${k}`, label: `${k}mm` })),
+    ...(canEdit ? [{ id: 'layout', label: '배치 편집' }] : []),
+  ];
+  host.innerHTML = `
+    <div class="sd-root">
+      <div class="sd-head">
+        <strong class="sd-title" title="${escapeAttr(f.filename)}">${escapeHtml(f.filename)}</strong>
+        <div class="seg sd-tabs">
+          ${tabs.map((t) => `<button class="sd-tab" data-view="${t.id}">${t.label}</button>`).join('')}
+          <button class="sd-cand-tab active" hidden></button>
+        </div>
+        <select class="sd-plate" hidden></select>
+        <button class="btn ghost sd-close">닫기</button>
+      </div>
+      <div class="sd-main">
+        <div class="sd-canvas">
+          <div class="ov sd-status small"></div>
+        </div>
+        <aside class="sd-panel"><div class="sd-dock"></div>${renderSliceDetail(f, base)}</aside>
+      </div>
+    </div>`;
+  const $ = (sel) => host.querySelector(sel);
+  const els = { canvas: $('.sd-canvas'), status: $('.sd-status'), plate: $('.sd-plate'), dock: $('.sd-dock') };
+  let mounted = null;
+  let token = 0;
+  $('.sd-close').addEventListener('click', close);
+
+  let viewedProfile = profiles[0] || '0.20';
+  async function show(viewId) {
+    const my = ++token;
+    if (viewId.startsWith('p:')) { viewedProfile = viewId.slice(2); printUi?.setProfile(viewedProfile); }
+    mounted?.dispose();
+    mounted = null;
+    els.status.textContent = '';
+    host.querySelectorAll('.sd-tab').forEach((b) => b.classList.toggle('active', b.dataset.view === viewId));
+    const candTab = $('.sd-cand-tab');
+    const cand = viewId.startsWith('c:') ? viewId.slice(2).split(':') : null;
+    candTab.hidden = !cand;
+    if (cand) candTab.textContent = `#${cand[0]} 후보 ${cand[1]}`;
+    host.querySelectorAll('.sd-cand').forEach((tr) => tr.classList.toggle('sd-cand-active', `c:${tr.dataset.obj}:${tr.dataset.cand}` === viewId));
+
+    if (viewId === 'layout') {
+      const { mountLayoutEditor } = await import('../layout-editor.js');
+      if (my !== token) return;
+      $('.sd-panel').scrollTop = 0; // phones dock the editor card at the top
+      mounted = mountLayoutEditor(els, {
+        base,
+        result: r,
+        onSave: async (layout) => {
+          try {
+            await api(`/api/admin/quotes/${q.id}/files/${f.id}/layout`, { method: 'POST', body: layout });
+            toast('이 배치로 다시 슬라이싱합니다. 끝나면 자동으로 표시됩니다.', 'success');
+            close();
+            markSliceQueued(q, f);
+          } catch (err) { toast(err.message, 'error'); }
+        },
+      });
+      return;
+    }
+    let file = null;
+    if (viewId.startsWith('p:')) file = r.profiles?.[viewId.slice(2)]?.file;
+    else if (cand) {
+      const o = (r.objects || []).find((x) => String(x.index) === cand[0]);
+      file = o?.candidates?.find((c) => c.id === cand[1])?.file;
+    }
+    if (!file) {
+      els.status.textContent = '미리볼 결과가 없습니다.';
+      return;
+    }
+    const { mountSlicePreview } = await import('../slice-preview.js');
+    if (my !== token) return;
+    mounted = mountSlicePreview(els, { url: `${base}/${file.split('/').map(encodeURIComponent).join('/')}` });
+  }
+
+  host.querySelectorAll('.sd-tab').forEach((b) => b.addEventListener('click', () => show(b.dataset.view)));
+  host.querySelectorAll('.sd-cand').forEach((tr) => tr.addEventListener('click', () => show(`c:${tr.dataset.obj}:${tr.dataset.cand}`)));
+  host.querySelector('.sd-decision-save')?.addEventListener('click', async () => {
+    const decision = host.querySelector('input[name="sd-decision"]:checked')?.value || null;
+    const note = host.querySelector('.sd-note').value;
+    try {
+      await api(`/api/admin/quotes/${q.id}/files/${f.id}/decision`, { method: 'PUT', body: { decision, note } });
+      f.printDecision = decision;
+      f.printNote = note;
+      f.decidedAt = decision ? Date.now() : null;
+      toast('출력 결정을 저장했습니다.', 'success');
+      refreshSliceUi(q, f);
+      printUi?.render();
+    } catch (err) { toast(err.message, 'error'); }
+  });
+  const printUi = $('.sd-print') ? wirePrintSection($('.sd-print .sd-print-body'), q, f, () => viewedProfile) : null;
+  host._dispose = () => { mounted?.dispose(); mounted = null; printUi?.dispose(); };
+  show(tabs[0]?.id ?? 'none');
+}
+
+// "프린터로 보내기": printer state, profile / plate / filament slot, then upload
+// + start through the server. Enabled only for approved files on an idle printer.
+function wirePrintSection(el, q, f, currentProfile) {
+  const r = f.slice.result;
+  const profiles = SLICE_PROFILES.filter((k) => r.profiles?.[k]?.file);
+  let status = null;
+  let profile = currentProfile();
+  let busy = false;
+  let timer = null;
+  const STATE_KO = {
+    idle: '대기 중', finish: '출력 완료 (베드 확인 필요)', failed: '출력 실패 (베드 확인 필요)',
+    running: '출력 중', pause: '일시 정지', prepare: '준비 중', slicing: '슬라이싱 중', init: '초기화 중', offline: '오프라인',
+  };
+
+  async function load() {
+    try { status = await api('/api/admin/printer'); } catch (err) { status = { error: err.message }; }
+    render();
+  }
+
+  function defaultTray() {
+    const pla = (status?.trays || []).filter((t) => /^PLA/i.test(t.type));
+    return (pla.find((t) => t.active) || pla[0])?.index;
+  }
+
+  function render() {
+    if (!status) return;
+    if (status.error || !status.configured) {
+      el.innerHTML = `<span class="error">${escapeHtml(status.error || '프린터 연동이 설정되지 않았습니다')}</span>`;
+      return;
+    }
+    const p = r.profiles[profile] || r.profiles[profiles[0]];
+    if (!r.profiles[profile]) profile = profiles[0];
+    const stateText = !status.online ? '오프라인'
+      : `${STATE_KO[status.state] || status.state || '알 수 없음'}${status.state === 'running' || status.state === 'pause'
+        ? ` ${status.progress}%${status.remainingMin != null ? `, 남은 ${fmtDur(status.remainingMin * 60)}` : ''}` : ''}`;
+    const prevTray = el.querySelector('input[name="sd-tray"]:checked')?.value;
+    const trays = status.trays || [];
+    const sel = prevTray != null && trays.some((t) => String(t.index) === prevTray) ? Number(prevTray) : defaultTray();
+    const approved = f.printDecision === 'approved';
+    const reason = !approved ? '출력 승인을 저장해야 보낼 수 있습니다.'
+      : !status.startable ? '프린터가 대기 중일 때 보낼 수 있습니다.'
+        : sel == null ? 'PLA가 들어 있는 슬롯이 없습니다.' : '';
+    el.className = 'sd-print-body small';
+    el.innerHTML = `
+      <dl class="sd-kv">
+        <dt>프린터</dt><dd>${escapeHtml(stateText)}${status.task && status.state !== 'idle' ? `<div class="muted">${escapeHtml(status.task)}</div>` : ''}</dd>
+        ${f.printSent ? `<dt>보낸 기록</dt><dd>${fmtDate(f.printSent.at)}<div class="muted">${escapeHtml(f.printSent.profile || '')}mm, 판 ${f.printSent.plate ?? 1}</div></dd>` : ''}
+      </dl>
+      <div class="sd-print-grid">
+        <span class="muted">프로필</span>
+        <div class="seg">${profiles.map((k) => `<button class="sd-print-prof ${k === profile ? 'active' : ''}" data-k="${k}">${k}mm</button>`).join('')}</div>
+        ${(Number(p.plates) || 1) > 1 ? `<span class="muted">판</span>
+          <select class="sd-print-plate">${Array.from({ length: Number(p.plates) }, (_, i) => `<option value="${i + 1}">${i + 1}</option>`).join('')}</select>` : ''}
+      </div>
+      <div class="sd-trays">${trays.map((t) => {
+        const pla = /^PLA/i.test(t.type);
+        // HA reports #RRGGBBAA; alpha 00 is a clear/translucent spool
+        const clear = !t.color || /00$/i.test(t.color);
+        return `<label class="sd-tray ${pla ? '' : 'sd-tray-off'}" title="${escapeAttr(t.color || '')}">
+          <input type="radio" name="sd-tray" value="${t.index}" ${t.index === sel ? 'checked' : ''} ${pla ? '' : 'disabled'}>
+          <span class="sd-swatch ${clear ? 'sd-swatch-clear' : ''}" style="${clear ? '' : `background:${escapeAttr(t.color.slice(0, 7))}`}"></span>
+          <span class="sd-tray-text"><b>${escapeHtml(t.label)}</b> ${escapeHtml(t.name)}${pla ? '' : ' <span class="muted">(PLA 아님)</span>'}</span>
+          <span class="muted">${t.remain != null ? `${t.remain}%` : ''}${t.active ? ' 사용 중' : ''}</span>
+        </label>`;
+      }).join('')}</div>
+      <label class="le-check"><input type="checkbox" class="sd-print-level" checked> 출력 전 베드 레벨링</label>
+      <label class="le-check"><input type="checkbox" class="sd-print-timelapse"> 타임랩스 녹화</label>
+      <button class="btn accent sd-print-send" ${reason || busy ? 'disabled' : ''}>${busy ? '보내는 중…' : `${profile}mm 출력 시작 (${fmtDur(p.time_s)})`}</button>
+      ${reason ? `<div class="muted">${reason}</div>` : ''}`;
+    el.querySelectorAll('.sd-print-prof').forEach((b) => b.addEventListener('click', () => { profile = b.dataset.k; render(); }));
+    el.querySelector('.sd-print-send').addEventListener('click', send);
+  }
+
+  async function send() {
+    const p = r.profiles[profile];
+    const plate = Number(el.querySelector('.sd-print-plate')?.value || 1);
+    const trayInput = el.querySelector('input[name="sd-tray"]:checked');
+    if (!trayInput) return toast('필라멘트 슬롯을 고르세요.', 'error');
+    const tray = Number(trayInput.value);
+    const trayText = trayInput.closest('.sd-tray').querySelector('.sd-tray-text').textContent.replace(/\s+/g, ' ').trim();
+    const ok = confirm(`베드를 비우고 출력할 판을 올려 두었나요?\n\n${f.filename}\n${profile}mm, 판 ${plate}, 예상 ${fmtDur(p.time_s)}\n필라멘트: ${trayText}\n\n프린터에서 바로 출력이 시작됩니다.`);
+    if (!ok) return;
+    busy = true;
+    render();
+    try {
+      const res = await api(`/api/admin/quotes/${q.id}/files/${f.id}/print`, {
+        method: 'POST',
+        body: {
+          profile, plate, tray,
+          bedLeveling: el.querySelector('.sd-print-level').checked,
+          timelapse: el.querySelector('.sd-print-timelapse').checked,
+        },
+      });
+      f.printSent = { at: Date.now(), profile: res.profile, plate: res.plate, tray: res.tray, name: res.name };
+      toast('프린터로 보냈습니다. 출력 시작을 확인하세요.', 'success');
+    } catch (err) {
+      toast(err.message, 'error');
+    } finally {
+      busy = false;
+      load();
+    }
+  }
+
+  load();
+  timer = setInterval(() => { if (!document.hidden && !busy) load(); }, 10_000);
+  return {
+    render,
+    setProfile(k) { if (r.profiles?.[k]?.file) { profile = k; render(); } },
+    dispose() { clearInterval(timer); },
+  };
+}
+
+function renderSliceDetail(f, base) {
+  const r = f.slice.result;
+  const fmtNum = (v, d = 0) => (v == null ? '-' : Number(v).toFixed(d));
+  const opt = (value, label) => `<label><input type="radio" name="sd-decision" value="${value}" ${(f.printDecision || '') === value ? 'checked' : ''}>${label}</label>`;
+  const decision = `
+    <section class="sd-sec">
+      <h4>출력 결정</h4>
+      <div class="seg sd-decision-opts">${opt('approved', '승인')}${opt('hold', '보류')}${opt('', '미정')}</div>
+      <textarea class="sd-note" rows="2" maxlength="1000" placeholder="메모 (선택)">${escapeHtml(f.printNote || '')}</textarea>
+      <div class="sd-row">
+        <button class="btn accent sd-decision-save">저장</button>
+        ${f.decidedAt ? `<span class="muted small">${fmtDate(f.decidedAt)} 저장됨</span>` : ''}
+      </div>
+    </section>`;
+
+  const profiles = SLICE_PROFILES.filter((k) => r.profiles?.[k]).map((k) => {
+    const p = r.profiles[k];
+    const stat = (label, value) => `<div><div class="sd-stat-k">${label}</div><div class="sd-stat-v">${value}</div></div>`;
+    return `<div class="sd-profile">
+      <div class="sd-row"><b>${k}mm</b><span class="sd-cost">${wonText(sliceCost(p.meters))}</span>${p.plates > 1 ? `<span class="muted small">${p.plates}판</span>` : ''}${p.file ? `<a class="btn ghost sd-dl" href="${base}/${encodeURIComponent(p.file)}">다운로드</a>` : ''}</div>
+      <div class="sd-stats">
+        ${stat('시간', fmtDur(p.time_s))}${stat('무게', `${Number(p.grams).toFixed(1)}g`)}
+        ${stat('길이', p.meters != null ? `${p.meters}m` : '-')}${stat('서포트', fmtDur(p.support_s))}
+      </div>
+    </div>`;
+  }).join('');
+  const kv = [
+    ['상태', r.status === 'done' ? '완료' : '<span class="error">실패</span>'],
+    ['방향 결정', r.mode === 'auto' ? 'Bambu 자동 방향' : '후보 탐색'],
+    ['소요', `${fmtNum(r.elapsed_s)}초`],
+    ['완료 시각', f.slice.slicedAt ? fmtDate(f.slice.slicedAt) : '-'],
+  ];
+  const meta = `<dl class="sd-kv small">${kv.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>`;
+  const result = `
+    <section class="sd-sec">
+      <h4>슬라이싱 결과</h4>
+      ${meta}
+      ${r.error ? `<div class="error small">${escapeHtml(r.error)}</div>` : ''}
+      ${(r.warnings || []).map((w) => `<div class="small muted">⚠ ${escapeHtml(w)}</div>`).join('')}
+      ${profiles}
+    </section>`;
+
+  const objects = (r.objects || []).map((o) => {
+    // only candidates that were sliced can be previewed; pruned ones are not listed
+    const cands = (o.candidates || []).filter((c) => c.file).map((c) => {
+      const m = c.metrics || {};
+      const chosen = o.chosen_by !== 'manual' && c.id === o.chosen;
+      return `<tr class="sd-cand" data-obj="${o.index}" data-cand="${c.id}">
+        <td><b>${c.id}</b>${chosen ? ' ✓' : ''}</td>
+        <td>${fmtDur(m.time_s)}</td><td>${fmtNum(m.grams, 0)}g</td>
+        <td>${wonText(sliceCost(m.meters))}</td>
+        <td>${fmtDur(m.support_s)}</td><td>${fmtNum(m.height_mm)}mm</td></tr>`;
+    }).join('');
+    const how = o.chosen_by === 'manual' ? '수동 배치'
+      : o.chosen ? `후보 ${o.chosen} (${o.chosen_by === 'llm' ? 'LLM 선택' : '자동 점수'})` : '';
+    return `<div class="sd-obj">
+      <div class="sd-row"><b class="sd-ellipsis">#${o.index} ${escapeHtml(o.name)}</b></div>
+      <dl class="sd-kv small">
+        <dt>크기</dt><dd>${(o.extents_mm || []).join(' × ')} mm</dd>
+        ${how ? `<dt>방향</dt><dd>${how}</dd>` : ''}
+      </dl>
+      ${[
+        o.watertight ? '' : '<span class="tag tag-hold">열린 메쉬</span>',
+        (o.flags || []).includes('scaled_m_to_mm') ? '<span class="tag tag-hold">m 단위로 보여 ×1000 확대</span>' : '',
+        o.supports === 'everywhere' ? '<span class="tag">서포트 전체 허용</span>' : '',
+      ].filter(Boolean).join(' ') || ''}
+      ${o.error ? `<div class="error small">${escapeHtml(o.error)}</div>` : ''}
+      ${o.reason ? `<div class="small">${escapeHtml(o.reason)}</div>` : ''}
+      ${o.concerns ? `<div class="small error">${escapeHtml(o.concerns)}</div>` : ''}
+      ${cands ? `<table class="sd-cands small">
+        <thead><tr><th>후보</th><th>시간</th><th>무게</th><th>비용</th><th>서포트</th><th>높이</th></tr></thead>
+        <tbody>${cands}</tbody></table>` : ''}
+    </div>`;
+  }).join('');
+  const hasCands = (r.objects || []).some((o) => (o.candidates || []).some((c) => c.file));
+  const llmInfo = r.llm?.used
+    ? `<div class="small">LLM: ${escapeHtml(r.llm.summary || '')}</div>`
+    : (r.llm?.error ? `<div class="small muted">LLM 미사용 (${escapeHtml(r.llm.error)})</div>` : '');
+  const orient = objects ? `
+    <section class="sd-sec">
+      <h4>방향</h4>
+      ${hasCands ? '<div class="muted small">후보를 누르면 그 방향으로 0.20mm 슬라이싱한 결과가 보입니다.</div>' : ''}
+      ${objects}
+      ${llmInfo}
+    </section>` : '';
+  const print = printerEnabled && Object.keys(r.profiles || {}).length
+    ? '<section class="sd-sec sd-print"><h4>프린터로 보내기</h4><div class="sd-print-body muted small">프린터 상태 확인 중…</div></section>'
+    : '';
+  return decision + print + result + orient;
 }

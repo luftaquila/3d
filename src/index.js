@@ -12,6 +12,7 @@ import publicRoutes from './routes/public.js';
 import quoteRoutes from './routes/quote.js';
 import adminRoutes from './routes/admin.js';
 import cameraRoutes from './routes/camera.js';
+import { startSliceDispatcher } from './slicer.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.resolve(__dirname, '..', 'public');
@@ -141,8 +142,11 @@ async function build() {
 }
 
 build()
-  .then((app) => app.listen({ port: config.port, host: '0.0.0.0' }))
-  .then((addr) => console.log(`[3d] listening on ${addr}`))
+  .then(async (app) => {
+    const addr = await app.listen({ port: config.port, host: '0.0.0.0' });
+    console.log(`[3d] listening on ${addr}`);
+    startSliceDispatcher(app.log);
+  })
   .catch((err) => {
     console.error(err);
     process.exit(1);

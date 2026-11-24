@@ -313,7 +313,7 @@ class MjpegBroadcaster {
   }
 }
 
-export { issueStreamUrl };
+export { issueStreamUrl, printerPrefix };
 
 export default async function cameraRoutes(app) {
   const broadcaster = new MjpegBroadcaster({
