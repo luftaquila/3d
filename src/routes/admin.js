@@ -27,7 +27,8 @@ function sliceView(f) {
     requestedAt: f.sliceRequestedAt,
     slicedAt: f.slicedAt,
     error: f.sliceError,
-    manualLayout: !!f.sliceLayout,
+    // slice_layout also holds {choose} for a candidate re-slice, which isn't manual
+    manualLayout: !!f.sliceLayout && !parseSlice(f.sliceLayout)?.choose,
     result: parseSlice(f.sliceJson),
   } : null;
 }
@@ -539,6 +540,47 @@ export default async function adminRoutes(app) {
       return reply.code(409).send({ error: '이미 슬라이싱 대기 중이거나 진행 중입니다.' });
     }
     enqueueSlices(db, [fileId], layout);
+    return { ok: true };
+  });
+
+  // Re-slice with explored candidates the admin picked: {objects: {"1": "B"}}.
+  app.post('/api/admin/quotes/:id/files/:fileId/choose', {
+    preHandler: [requireAdmin, requireCsrfHeader],
+  }, async (req, reply) => {
+    const { id, fileId } = req.params;
+    if (!isUlid(id) || !isUlid(fileId)) return reply.code(400).send({ error: 'invalid id' });
+    if (!slicerConfigured()) return reply.code(503).send({ error: '슬라이서가 설정되지 않았습니다.' });
+    const objects = req.body?.objects;
+    const entries = objects && typeof objects === 'object' ? Object.entries(objects) : [];
+    if (!entries.length || entries.length > 500
+      || !entries.every(([k, v]) => /^\d{1,3}$/.test(k) && typeof v === 'string' && /^[A-Z]$/.test(v))) {
+      return reply.code(400).send({ error: 'invalid choice' });
+    }
+    const db = openDatabase();
+    const row = db.prepare(`
+      SELECT slice_status AS status, slice_json AS sliceJson, file_path AS filePath, deleted_at AS deletedAt
+      FROM quote_files WHERE id = ? AND quote_id = ?
+    `).get(fileId, id);
+    if (!row) return reply.code(404).send({ error: 'not found' });
+    if (!row.filePath || row.deletedAt) return reply.code(410).send({ error: '원본 파일이 없습니다.' });
+    if (row.status === 'pending' || row.status === 'running') {
+      return reply.code(409).send({ error: '이미 슬라이싱 대기 중이거나 진행 중입니다.' });
+    }
+    const infos = parseSlice(row.sliceJson)?.objects || [];
+    const chosenKeys = new Set(entries.map(([k]) => k));
+    const manual = infos.filter((o) => o.chosen_by === 'manual' && !chosenKeys.has(String(o.index)));
+    if (manual.length) {
+      return reply.code(409).send({
+        error: `${manual.map((o) => `#${o.index}`).join(', ')}은(는) 직접 배치한 객체라 후보로 바꾸면 배치가 사라집니다. 배치 편집에서 바꿔주세요.`,
+      });
+    }
+    for (const [k, v] of entries) {
+      const info = infos.find((o) => String(o.index) === k);
+      if (!info?.candidates?.some((c) => c.id === v && c.feasible && c.transform)) {
+        return reply.code(400).send({ error: `#${k} 후보 ${v}는 고를 수 없습니다.` });
+      }
+    }
+    enqueueSlices(db, [fileId], { choose: Object.fromEntries(entries) });
     return { ok: true };
   });
 

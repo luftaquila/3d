@@ -28,7 +28,8 @@ export function slicesDir(quoteId, fileId) {
     : path.join(config.dataDir, 'slices', quoteId);
 }
 
-// layout: null for a full automatic run, or {arrange, objects:[{index, matrix}]}
+// layout: null for a full automatic run, {arrange, objects:[{index, matrix}]},
+// or {choose: {<object index>: <candidate id>}}
 // from the web editor to re-slice exactly that placement.
 export function enqueueSlices(db, fileIds, layout = null) {
   if (!slicerConfigured() || fileIds.length === 0) return 0;
@@ -109,6 +110,13 @@ const TRANSPORT_CODES = new Set([
   'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_CLOSED',
 ]);
 
+// slice_layout holds either a manual layout or {choose: {index: candidate}}.
+function redo(json) {
+  if (!json) return {};
+  const saved = JSON.parse(json);
+  return saved.choose ? { choose: saved.choose } : { layout: saved };
+}
+
 async function runNext() {
   const db = openDatabase();
   const row = db.prepare(`
@@ -136,7 +144,7 @@ async function runNext() {
         path: row.filePath,
         filename: row.filename,
         answers: resolveAnswers(db, row.answersJson),
-        layout: row.layoutJson ? JSON.parse(row.layoutJson) : undefined,
+        ...redo(row.layoutJson),
       }),
       headersTimeout: SLICE_TIMEOUT_MS,
       bodyTimeout: SLICE_TIMEOUT_MS,

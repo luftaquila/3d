@@ -4,6 +4,8 @@ POST /slice  {quoteId, fileId, path, filename, answers:[{label,value}], useLlm,
               layout?: {arrange, objects:[{index, matrix:[16, row-major]}]}}
   Without layout: explore orientations (+LLM). With layout: slice exactly that
   placement (object frame -> plate coordinates), keeping earlier artifacts.
+  choose?: {"<object index>": "<candidate id>"} instead re-slices with those
+  explored candidates.
   -> runs synchronously (one job at a time; 409 while busy), returns result JSON.
 POST /printer/upload  {quoteId, fileId, file: "0.20.gcode.3mf" | "0.08.gcode.3mf", name}
   Uploads that sliced project to the printer's SD card root as `name` (FTPS).
@@ -27,6 +29,8 @@ MAX_BODY = 256 * 1024
 
 _lock = threading.Lock()
 _upload_lock = threading.Lock()  # independent of slicing
+CHOOSE_KEY = re.compile(r"^\d{1,3}$")
+CHOOSE_VAL = re.compile(r"^[A-Z]$")
 PRINT_FILE = re.compile(r"^0\.(20|08)\.gcode\.3mf$")
 # printer-side file name: no path separators or control characters
 BAD_NAME = re.compile(r"[\x00-\x1f/\\]")
@@ -91,6 +95,13 @@ class Handler(BaseHTTPRequestHandler):
             except (AttributeError, KeyError, TypeError, ValueError):
                 return self._send(400, {"error": "invalid layout"})
 
+        choose = req.get("choose")
+        if choose is not None:
+            if (not isinstance(choose, dict) or not choose or len(choose) > 500
+                    or not all(isinstance(k, str) and CHOOSE_KEY.match(k) and isinstance(v, str) and CHOOSE_VAL.match(v)
+                               for k, v in choose.items())):
+                return self._send(400, {"error": "invalid choose"})
+
         if not _lock.acquire(blocking=False):
             return self._send(409, {"error": "busy"})
         try:
@@ -101,6 +112,7 @@ class Handler(BaseHTTPRequestHandler):
                 "answers": answers,
                 "use_llm": bool(req.get("useLlm", True)),
                 "layout": layout,
+                "choose": choose,
             })
         finally:
             _lock.release()

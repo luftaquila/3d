@@ -3,6 +3,23 @@ use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 
 const MAX_TRIANGLES: u32 = 5_000_000;
+// Report analysis progress every this many vertices / triangles.
+const PROGRESS_EVERY: usize = 1 << 18;
+
+// Optional JS callback for long analyses: called with a fraction 0..1 of the
+// topology pass (vertex welding then edge counting), which dominates the time.
+struct Progress(Option<js_sys::Function>);
+
+impl Progress {
+    fn new(f: Option<js_sys::Function>) -> Self {
+        Progress(f)
+    }
+    fn report(&self, fraction: f64) {
+        if let Some(f) = &self.0 {
+            let _ = f.call1(&JsValue::NULL, &JsValue::from_f64(fraction));
+        }
+    }
+}
 
 #[wasm_bindgen]
 pub struct Mesh {
@@ -86,8 +103,8 @@ impl Mesh {
 // Shared tail of every parse path: run topology analysis + volume/surface and
 // pack the Mesh. Both the STL parsers and analyze_positions feed through here so
 // the metrics are computed identically regardless of source format.
-fn finalize_mesh(positions: Vec<f32>, normals: Vec<f32>, triangle_count: u32, bbox_arr: [f32; 6]) -> Mesh {
-    let analysis = analyze_mesh(&positions, &bbox_arr);
+fn finalize_mesh(positions: Vec<f32>, normals: Vec<f32>, triangle_count: u32, bbox_arr: [f32; 6], progress: &Progress) -> Mesh {
+    let analysis = analyze_mesh(&positions, &bbox_arr, progress);
     let volume = compute_volume(&positions);
     let surface_area = compute_surface_area(&positions);
     Mesh {
@@ -107,12 +124,13 @@ fn finalize_mesh(positions: Vec<f32>, normals: Vec<f32>, triangle_count: u32, bb
 }
 
 // Analyze a flat, non-indexed triangle-soup positions array (9 floats per
-// triangle) already in model space. Used by the 3MF path: three.js's
-// ThreeMFLoader handles the zip/XML/transforms client-side, then the baked
+// triangle) already in model space. Used by the 3MF path: the parse worker
+// (public/js/model-worker.js) handles the zip/XML/transforms, then the baked
 // world-space vertices come here so 3MF gets the same volume/surface/watertight
 // /edge metrics as STL. Flat normals are recomputed per triangle.
 #[wasm_bindgen]
-pub fn analyze_positions(positions: &[f32]) -> Result<Mesh, JsValue> {
+pub fn analyze_positions(positions: &[f32], progress: Option<js_sys::Function>) -> Result<Mesh, JsValue> {
+    let progress = Progress::new(progress);
     if positions.is_empty() || positions.len() % 9 != 0 {
         return Err(JsValue::from_str("positions length must be a positive multiple of 9"));
     }
@@ -141,7 +159,7 @@ pub fn analyze_positions(positions: &[f32]) -> Result<Mesh, JsValue> {
     }
 
     let bbox_arr = bbox.to_array();
-    Ok(finalize_mesh(positions.to_vec(), normals, triangle_count, bbox_arr))
+    Ok(finalize_mesh(positions.to_vec(), normals, triangle_count, bbox_arr, &progress))
 }
 
 fn compute_surface_area(positions: &[f32]) -> f32 {
@@ -189,15 +207,16 @@ fn compute_volume(positions: &[f32]) -> f32 {
 }
 
 #[wasm_bindgen]
-pub fn parse_stl(data: &[u8]) -> Result<Mesh, JsValue> {
+pub fn parse_stl(data: &[u8], progress: Option<js_sys::Function>) -> Result<Mesh, JsValue> {
+    let progress = Progress::new(progress);
     if data.len() < 15 {
         return Err(JsValue::from_str("file too small for STL"));
     }
 
     if is_ascii_stl(data) {
-        parse_ascii(data)
+        parse_ascii(data, &progress)
     } else if data.len() >= 84 {
-        parse_binary(data)
+        parse_binary(data, &progress)
     } else {
         Err(JsValue::from_str("file too small for binary STL"))
     }
@@ -231,7 +250,7 @@ fn is_ascii_stl(data: &[u8]) -> bool {
     true
 }
 
-fn parse_binary(data: &[u8]) -> Result<Mesh, JsValue> {
+fn parse_binary(data: &[u8], progress: &Progress) -> Result<Mesh, JsValue> {
     let tri_count = u32::from_le_bytes([data[80], data[81], data[82], data[83]]);
     if tri_count > MAX_TRIANGLES {
         return Err(JsValue::from_str("triangle count exceeds limit"));
@@ -278,10 +297,10 @@ fn parse_binary(data: &[u8]) -> Result<Mesh, JsValue> {
     }
 
     let bbox_arr = bbox.to_array();
-    Ok(finalize_mesh(positions, normals, tri_count, bbox_arr))
+    Ok(finalize_mesh(positions, normals, tri_count, bbox_arr, progress))
 }
 
-fn parse_ascii(data: &[u8]) -> Result<Mesh, JsValue> {
+fn parse_ascii(data: &[u8], progress: &Progress) -> Result<Mesh, JsValue> {
     let text = std::str::from_utf8(data).map_err(|_| JsValue::from_str("ascii STL not valid UTF-8"))?;
 
     let mut positions: Vec<f32> = Vec::new();
@@ -335,7 +354,7 @@ fn parse_ascii(data: &[u8]) -> Result<Mesh, JsValue> {
     }
 
     let bbox_arr = bbox.to_array();
-    Ok(finalize_mesh(positions, normals, triangle_count, bbox_arr))
+    Ok(finalize_mesh(positions, normals, triangle_count, bbox_arr, progress))
 }
 
 struct Analysis {
@@ -351,7 +370,7 @@ struct Analysis {
 // boundary edges) can't inflate the WASM return into the megabytes.
 const MAX_OVERLAY_EDGES: u32 = 100_000;
 
-fn analyze_mesh(positions: &[f32], bbox: &[f32; 6]) -> Analysis {
+fn analyze_mesh(positions: &[f32], bbox: &[f32; 6], progress: &Progress) -> Analysis {
     let vcount = positions.len() / 3;
     let tcount = vcount / 3;
     if tcount == 0 {
@@ -379,6 +398,9 @@ fn analyze_mesh(positions: &[f32], bbox: &[f32; 6]) -> Analysis {
     let mut indices: Vec<u32> = Vec::with_capacity(vcount);
 
     for v in 0..vcount {
+        if v % PROGRESS_EVERY == 0 {
+            progress.report(0.5 * v as f64 / vcount as f64);
+        }
         let x = positions[v * 3];
         let y = positions[v * 3 + 1];
         let z = positions[v * 3 + 2];
@@ -403,6 +425,9 @@ fn analyze_mesh(positions: &[f32], bbox: &[f32; 6]) -> Analysis {
     let mut degenerate: u32 = 0;
 
     for t in 0..tcount {
+        if t % PROGRESS_EVERY == 0 {
+            progress.report(0.5 + 0.45 * t as f64 / tcount as f64);
+        }
         let a = indices[t * 3];
         let b = indices[t * 3 + 1];
         let c = indices[t * 3 + 2];
