@@ -7,3 +7,4 @@ data/
 wasm-src/target/
 wasm-src/pkg/
 .DS_Store
+__pycache__/

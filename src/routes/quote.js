@@ -11,6 +11,7 @@ import { sendQuoteNotification } from '../admin-notify.js';
 import { sendSms, sensConfigured, smsByteLength } from '../sens.js';
 import { sendAlimtalk, alimtalkConfigured, getAlimtalkTemplates } from '../alimtalk.js';
 import { isUlid, maskEmail, maskPhone } from '../log-utils.js';
+import { enqueueSlices } from '../slicer.js';
 
 const PHONE_RE = /^[0-9+\-() ]{6,24}$/;
 const mb = (n) => `${Math.round(n / (1024 * 1024))}MB`;
@@ -319,6 +320,8 @@ export default async function quoteRoutes(app) {
       await cleanupUploads(acceptedFiles);
       return reply.code(413).send({ error: '사용자 업로드 용량 한도를 초과했습니다.' });
     }
+
+    enqueueSlices(db, acceptedFiles.map((f) => f.id));
 
     // Resolve form-field labels for the answers and the estimate config so the
     // admin notification carries the full submission, not just a file count.

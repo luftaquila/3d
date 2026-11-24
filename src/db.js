@@ -159,4 +159,28 @@ function migrate(db) {
   if (!fileCols.find((c) => c.name === 'surface_area_mm2')) {
     db.exec('ALTER TABLE quote_files ADD COLUMN surface_area_mm2 REAL');
   }
+  // Auto-slicing (src/slicer.js): queue state + the worker's result JSON.
+  if (!fileCols.find((c) => c.name === 'slice_status')) {
+    db.exec('ALTER TABLE quote_files ADD COLUMN slice_status TEXT');
+    db.exec('ALTER TABLE quote_files ADD COLUMN slice_requested_at INTEGER');
+    db.exec('ALTER TABLE quote_files ADD COLUMN sliced_at INTEGER');
+    db.exec('ALTER TABLE quote_files ADD COLUMN slice_json TEXT');
+    db.exec('ALTER TABLE quote_files ADD COLUMN slice_error TEXT');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_files_slice ON quote_files(slice_status, slice_requested_at)');
+  }
+  // Manual layout from the web editor for the next slice job (JSON, nullable),
+  // and the admin's print decision after reviewing the sliced preview.
+  if (!fileCols.find((c) => c.name === 'slice_layout')) {
+    db.exec('ALTER TABLE quote_files ADD COLUMN slice_layout TEXT');
+  }
+  if (!fileCols.find((c) => c.name === 'print_decision')) {
+    db.exec('ALTER TABLE quote_files ADD COLUMN print_decision TEXT');
+    db.exec('ALTER TABLE quote_files ADD COLUMN print_note TEXT');
+    db.exec('ALTER TABLE quote_files ADD COLUMN decided_at INTEGER');
+  }
+  // Last time this file was sent to the printer (JSON: profile, plate, tray, name).
+  if (!fileCols.find((c) => c.name === 'print_sent_at')) {
+    db.exec('ALTER TABLE quote_files ADD COLUMN print_sent_at INTEGER');
+    db.exec('ALTER TABLE quote_files ADD COLUMN print_sent_json TEXT');
+  }
 }

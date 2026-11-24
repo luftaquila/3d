@@ -61,6 +61,10 @@ export const config = {
     url: optional('NAVER_PLACE_URL', ''),
     mapsClientId: optional('NAVER_MAPS_CLIENT_ID', ''),
   },
+  slicer: {
+    // Cluster-internal slicer worker (slicer/). Empty disables auto-slicing.
+    url: optional('SLICER_URL', '').replace(/\/+$/, ''),
+  },
   limits: {
     fileSizeBytes: 200 * 1024 * 1024,
     totalSizeBytes: 500 * 1024 * 1024,
