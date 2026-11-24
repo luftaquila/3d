@@ -1,54 +1,41 @@
-import { loadStlWasm } from './stl-wasm.js';
+// Parse an STL / 3MF into the Mesh shape the viewer, thumbnails and the
+// watertight legend use (positions, normals, triangleCount, bbox, isWatertight,
+// boundary/nonManifold edges + positions, volume, surfaceArea).
+//
+// The work runs in a module worker (model-worker.js): a large 3MF holds
+// hundreds of MB of XML, and parsing it on the main thread froze the tab for
+// over a minute. One worker per call, terminated afterwards to free memory.
 
-function is3mf(name) {
-  return /\.3mf$/i.test(name || '');
-}
+export class ModelTooLargeError extends Error {}
 
-// Parse a 3MF ArrayBuffer into the same Mesh shape the WASM STL parser returns,
-// so the viewer / thumbnail / legend code can treat both formats identically.
-// three.js's ThreeMFLoader handles the zip + XML (+ transforms / components /
-// build items); we bake each mesh's world transform, flatten to a non-indexed
-// triangle-soup positions array, and hand that to the WASM analyzer for
-// volume / surface / watertight / edges / bbox.
-async function parse3mf(buffer) {
-  const { ThreeMFLoader } = await import('three/addons/loaders/3MFLoader.js');
-  const object = new ThreeMFLoader().parse(buffer);
-  object.updateMatrixWorld(true);
-
-  const merged = [];
-  object.traverse((child) => {
-    if (!child.isMesh || !child.geometry) return;
-    const indexed = child.geometry.index != null;
-    const geom = indexed ? child.geometry.toNonIndexed() : child.geometry;
-    const pos = geom.getAttribute('position');
-    if (pos) {
-      const arr = pos.array;
-      const m = child.matrixWorld.elements;
-      for (let i = 0; i < arr.length; i += 3) {
-        const x = arr[i], y = arr[i + 1], z = arr[i + 2];
-        merged.push(
-          m[0] * x + m[4] * y + m[8] * z + m[12],
-          m[1] * x + m[5] * y + m[9] * z + m[13],
-          m[2] * x + m[6] * y + m[10] * z + m[14],
-        );
-      }
-    }
-    if (indexed) geom.dispose?.();
+function runWorker(message, onProgress) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL('./model-worker.js', import.meta.url), { type: 'module' });
+    worker.onmessage = ({ data }) => {
+      if (data.progress != null) { onProgress?.(data.progress, data.phase); return; }
+      worker.terminate();
+      if (data.ok) resolve(data);
+      else reject(data.tooLarge ? new ModelTooLargeError(data.error) : new Error(data.error));
+    };
+    worker.onerror = (ev) => {
+      worker.terminate();
+      reject(new Error(ev.message || '모델을 해석하지 못했습니다.'));
+    };
+    worker.postMessage(message);
   });
-
-  if (merged.length < 9) {
-    throw new Error('3MF에 미리보기할 메쉬 지오메트리가 없습니다.');
-  }
-  const mod = await loadStlWasm();
-  return mod.analyze_positions(new Float32Array(merged));
 }
 
-// Returns a Mesh-shaped object (positions, normals, triangleCount, bbox,
-// isWatertight, boundary/nonManifold edges + positions, volume, surfaceArea).
+// source: ArrayBuffer (copied to the worker) or a File/Blob (read there).
 // `name` selects the parser by original extension — the upload route stores
 // every model on disk as <id>.stl, so the served URL is not a reliable signal.
-export async function parseModel(buffer, name) {
-  if (is3mf(name)) return parse3mf(buffer);
-  const mod = await loadStlWasm();
-  return mod.parse_stl(new Uint8Array(buffer));
+export async function parseModel(source, name, onProgress) {
+  return (await runWorker({ source, name }, onProgress)).mesh;
+}
+
+// Parse and, where the browser can, render the thumbnail in the worker too.
+// Resolves { dataUrl, stats } or, without worker WebGL, { mesh }.
+// onProgress(fraction 0..1, phase: read | parse | analyze | thumbnail).
+export async function parseWithThumbnail(source, name, size, onProgress) {
+  const { mesh, dataUrl, stats, timings } = await runWorker({ source, name, thumb: size }, onProgress);
+  return dataUrl ? { dataUrl, stats, timings } : { mesh };
 }

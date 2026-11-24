@@ -264,6 +264,33 @@ def _manual_plan(layout, objects, result):
     return plan, arrange, False
 
 
+def _choose_plan(choose, objects, result):
+    """Re-slice with the explored candidates the admin picked in the web UI
+    ({object index: candidate id}); other objects keep their current choice.
+    Placement is the same as for an automatic run."""
+    plan = []
+    for obj, info in zip(objects, result["objects"]):
+        by_id = {c["id"]: c for c in info.get("candidates") or [] if c.get("feasible") and c.get("transform")}
+        key = str(obj["index"])
+        cid = choose.get(key, info.get("chosen"))
+        if cid not in by_id:
+            raise bambu.SliceError(f"object {obj['index']}: candidate {cid} was not explored")
+        if key in choose:
+            info.update(chosen=cid, chosen_by="admin")
+            for k in ("reason", "concerns", "supports"):  # the LLM's notes no longer apply
+                info.pop(k, None)
+        mesh, m = geometry.place(obj["mesh"], np.array(by_id[cid]["transform"]))
+        plan.append([obj, info, mesh, m])
+    arrange = True
+    if len(plan) == 1:
+        bed = geometry.place_on_bed(plan[0][2])
+        if bed is not None:
+            plan[0][2], m2 = bed
+            plan[0][3] = m2 @ plan[0][3]
+            arrange = False
+    return [tuple(p) for p in plan], arrange, False
+
+
 def _final_slice(plan, arrange, orient, result, out_dir, work):
     overrides = None
     if any(info.get("supports") == "everywhere" for _, info, _, _ in plan):
@@ -294,10 +321,12 @@ def process(job):
     started = time.time()
     out_dir = job["out_dir"]
     layout = job.get("layout")
+    choose = job.get("choose")
     previous = None
-    if layout:
-        # Re-slice with a manual layout: keep the exploration artifacts (previews,
-        # sliced candidates) and replace only the sliced output.
+    if layout or choose:
+        # Re-slice with a manual layout or chosen candidates: keep the
+        # exploration artifacts (previews, sliced candidates) and replace only
+        # the sliced output.
         try:
             with open(os.path.join(out_dir, "result.json"), encoding="utf-8") as fh:
                 previous = json.load(fh)
@@ -328,6 +357,8 @@ def process(job):
 
         if layout:
             plan, arrange, orient = _manual_plan(layout, objects, result)
+        elif choose:
+            plan, arrange, orient = _choose_plan(choose, objects, result)
         else:
             plan, arrange, orient = _auto_plan(job, objects, result, out_dir, work)
         _final_slice(plan, arrange, orient, result, out_dir, work)

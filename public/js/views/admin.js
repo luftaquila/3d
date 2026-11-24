@@ -1200,7 +1200,8 @@ function renderSliceLine(qid, f) {
     const prof = s.result?.profiles || {};
     const objs = s.result?.objects || [];
     const how = objs.some((o) => o.chosen_by === 'manual') ? '수동 배치'
-      : objs.some((o) => o.chosen_by === 'llm') ? 'LLM 선택' : '';
+      : objs.some((o) => o.chosen_by === 'admin') ? '직접 선택'
+        : objs.some((o) => o.chosen_by === 'llm') ? 'LLM 선택' : '';
     // one aligned row per profile: name, time, cost (no run-on lists)
     body = `<div class="sl-grid">${SLICE_PROFILES.map((k) => {
       const p = prof[k];
@@ -1389,6 +1390,15 @@ async function openSliceDetail(q, f) {
     candTab.hidden = !cand;
     if (cand) candTab.textContent = `#${cand[0]} 후보 ${cand[1]}`;
     host.querySelectorAll('.sd-cand').forEach((tr) => tr.classList.toggle('sd-cand-active', `c:${tr.dataset.obj}:${tr.dataset.cand}` === viewId));
+    host.querySelectorAll('.sd-use-cand').forEach((b) => {
+      const o = (r.objects || []).find((x) => String(x.index) === b.dataset.obj);
+      const current = o && o.chosen_by !== 'manual' && cand?.[1] === o.chosen;
+      b.hidden = !cand || cand[0] !== b.dataset.obj || current;
+      if (!b.hidden) {
+        b.dataset.cand = cand[1];
+        b.textContent = `후보 ${cand[1]}로 다시 슬라이싱`;
+      }
+    });
 
     if (viewId === 'layout') {
       const { mountLayoutEditor } = await import('../layout-editor.js');
@@ -1425,6 +1435,14 @@ async function openSliceDetail(q, f) {
 
   host.querySelectorAll('.sd-tab').forEach((b) => b.addEventListener('click', () => show(b.dataset.view)));
   host.querySelectorAll('.sd-cand').forEach((tr) => tr.addEventListener('click', () => show(`c:${tr.dataset.obj}:${tr.dataset.cand}`)));
+  host.querySelectorAll('.sd-use-cand').forEach((b) => b.addEventListener('click', async () => {
+    try {
+      await api(`/api/admin/quotes/${q.id}/files/${f.id}/choose`, { method: 'POST', body: { objects: { [b.dataset.obj]: b.dataset.cand } } });
+      toast(`후보 ${b.dataset.cand}로 다시 슬라이싱합니다. 끝나면 자동으로 표시됩니다.`, 'success');
+      close();
+      markSliceQueued(q, f);
+    } catch (err) { toast(err.message, 'error'); }
+  }));
   host.querySelector('.sd-decision-save')?.addEventListener('click', async () => {
     const decision = host.querySelector('input[name="sd-decision"]:checked')?.value || null;
     const note = host.querySelector('.sd-note').value;
@@ -1609,7 +1627,7 @@ function renderSliceDetail(f, base) {
         <td>${fmtDur(m.support_s)}</td><td>${fmtNum(m.height_mm)}mm</td></tr>`;
     }).join('');
     const how = o.chosen_by === 'manual' ? '수동 배치'
-      : o.chosen ? `후보 ${o.chosen} (${o.chosen_by === 'llm' ? 'LLM 선택' : '자동 점수'})` : '';
+      : o.chosen ? `후보 ${o.chosen} (${{ llm: 'LLM 선택', admin: '직접 선택' }[o.chosen_by] || '자동 점수'})` : '';
     return `<div class="sd-obj">
       <div class="sd-row"><b class="sd-ellipsis">#${o.index} ${escapeHtml(o.name)}</b></div>
       <dl class="sd-kv small">
@@ -1626,7 +1644,8 @@ function renderSliceDetail(f, base) {
       ${o.concerns ? `<div class="small error">${escapeHtml(o.concerns)}</div>` : ''}
       ${cands ? `<table class="sd-cands small">
         <thead><tr><th>후보</th><th>시간</th><th>무게</th><th>비용</th><th>서포트</th><th>높이</th></tr></thead>
-        <tbody>${cands}</tbody></table>` : ''}
+        <tbody>${cands}</tbody></table>
+        ${slicerEnabled ? `<button class="btn accent sd-use-cand" data-obj="${o.index}" hidden></button>` : ''}` : ''}
     </div>`;
   }).join('');
   const hasCands = (r.objects || []).some((o) => (o.candidates || []).some((c) => c.file));
@@ -1636,7 +1655,7 @@ function renderSliceDetail(f, base) {
   const orient = objects ? `
     <section class="sd-sec">
       <h4>방향</h4>
-      ${hasCands ? '<div class="muted small">후보를 누르면 그 방향으로 0.20mm 슬라이싱한 결과가 보입니다.</div>' : ''}
+      ${hasCands ? '<div class="muted small">후보를 누르면 그 방향으로 0.20mm 슬라이싱한 결과가 보이고, 그 후보로 다시 슬라이싱할 수 있습니다.</div>' : ''}
       ${objects}
       ${llmInfo}
     </section>` : '';

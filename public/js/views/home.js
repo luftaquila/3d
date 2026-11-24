@@ -1,6 +1,7 @@
 import { api, toast, loginRedirect, fmtBytes } from '../api.js';
 import * as Draft from '../draft.js';
 import { generateThumbnail } from '../thumb-gen.js';
+import { ModelTooLargeError } from '../model-parse.js';
 import { renderWarningBadge, wireWarningBadges } from '../watertight-badge.js';
 
 // Camera stream self-healing.
@@ -404,16 +405,44 @@ function wireQuoteForm(fields, state, navigate) {
   const bufferCache = new Map();
   let thumbPromise = Promise.resolve();
 
+  const PHASES = { read: '읽는 중', parse: '읽는 중', analyze: '분석 중', thumbnail: '썸네일 생성 중' };
+  function progressInner(e) {
+    const pct = Math.round((e.progress || 0) * 100);
+    return `<span>${PHASES[e.phase] || '준비 중'} ${pct}%</span><span class="thumb-bar"><span style="width:${pct}%"></span></span>`;
+  }
+
+  // Overall analysis progress of files still being processed (null if none).
+  function pendingProgress() {
+    const pending = files.map((f) => entries.get(f.name)).filter((e) => e && !e.thumb && !e.error && !e.large);
+    if (!pending.length) return null;
+    return pending.reduce((a, e) => a + (e.progress || 0), 0) / pending.length;
+  }
+  let onPendingProgress = null; // set while the submit button waits
+
+  // Update one card's progress in place (no full re-render on every tick).
+  function showProgress(name, value, phase) {
+    const e = entries.get(name);
+    if (!e) return;
+    e.progress = value;
+    e.phase = phase;
+    const i = files.findIndex((f) => f.name === name);
+    const el = previewList.querySelector(`.file-card[data-index="${i}"] .thumb-progress`);
+    if (el) el.innerHTML = progressInner(e);
+    onPendingProgress?.();
+  }
+
   function renderCards() {
     previewList.innerHTML = files.map((f, i) => {
       const e = entries.get(f.name) ?? {};
       let thumbContent;
       if (e.thumb) {
         thumbContent = `<img src="${e.thumb}" alt="${escapeAttr(f.name)}">`;
+      } else if (e.large) {
+        thumbContent = `<div style="aspect-ratio:1;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:11px;text-align:center;padding:6px;">삼각형이 많아<br>미리보기 생략</div>`;
       } else if (e.error) {
         thumbContent = `<div style="aspect-ratio:1;display:flex;align-items:center;justify-content:center;color:var(--danger);font-size:11px;text-align:center;padding:6px;">썸네일 실패</div>`;
       } else {
-        thumbContent = `<div style="aspect-ratio:1;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:12px;">생성 중…</div>`;
+        thumbContent = `<div class="thumb-progress">${progressInner(e)}</div>`;
       }
       return `
         <div class="file-card clickable" data-index="${i}" title="클릭하여 미리보기">
@@ -446,6 +475,10 @@ function wireQuoteForm(fields, state, navigate) {
     const f = files[idx];
     if (!f) return;
     const ent = entries.get(f.name);
+    if (ent?.large) {
+      toast(`${ent.large} 업로드는 그대로 가능합니다.`, 'info');
+      return;
+    }
     if (ent?.error) {
       toast(`미리보기 실패: ${ent.error}`, 'error');
       return;
@@ -478,8 +511,9 @@ function wireQuoteForm(fields, state, navigate) {
       entries.set(f.name, {});
       renderCards();
       try {
-        const buf = await readBuffer(f);
-        const { dataUrl, triangleCount, isWatertight, boundaryEdges, nonManifoldEdges, volume, surfaceArea } = await generateThumbnail(buf, f.name);
+        // the File itself goes to the parse worker; no copy on the main thread
+        const { dataUrl, triangleCount, isWatertight, boundaryEdges, nonManifoldEdges, volume, surfaceArea } = await generateThumbnail(
+          f, f.name, 512, (value, phase) => showProgress(f.name, value, phase));
         entries.set(f.name, {
           thumb: dataUrl,
           tris: triangleCount,
@@ -490,8 +524,12 @@ function wireQuoteForm(fields, state, navigate) {
           surfaceArea,
         });
       } catch (err) {
-        console.warn('thumbnail failed', f.name, err);
-        entries.set(f.name, { error: err.message || String(err) });
+        if (err instanceof ModelTooLargeError) {
+          entries.set(f.name, { large: err.message });
+        } else {
+          console.warn('thumbnail failed', f.name, err);
+          entries.set(f.name, { error: err.message || String(err) });
+        }
       }
       renderCards();
     }
@@ -580,10 +618,20 @@ function wireQuoteForm(fields, state, navigate) {
     }
 
     setBusy(true);
-    status.textContent = '썸네일 준비 중...';
-    try {
-      await thumbPromise;
-    } catch { /* thumbs are best-effort */ }
+    // The thumbnail and the model check (watertight, volume) are only made in
+    // the browser, so wait for them; the parse worker keeps the page
+    // responsive and the progress is shown here.
+    if (pendingProgress() != null) {
+      onPendingProgress = () => {
+        const p = pendingProgress();
+        if (p != null) status.textContent = `모델 분석과 썸네일 준비 중… ${Math.round(p * 100)}%`;
+      };
+      onPendingProgress();
+      try {
+        await thumbPromise;
+      } catch { /* thumbs are best-effort */ }
+      onPendingProgress = null;
+    }
 
     const form = new FormData();
     form.append('name', vals.name);

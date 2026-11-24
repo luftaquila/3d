@@ -542,6 +542,40 @@ export default async function adminRoutes(app) {
     return { ok: true };
   });
 
+  // Re-slice with explored candidates the admin picked: {objects: {"1": "B"}}.
+  app.post('/api/admin/quotes/:id/files/:fileId/choose', {
+    preHandler: [requireAdmin, requireCsrfHeader],
+  }, async (req, reply) => {
+    const { id, fileId } = req.params;
+    if (!isUlid(id) || !isUlid(fileId)) return reply.code(400).send({ error: 'invalid id' });
+    if (!slicerConfigured()) return reply.code(503).send({ error: '슬라이서가 설정되지 않았습니다.' });
+    const objects = req.body?.objects;
+    const entries = objects && typeof objects === 'object' ? Object.entries(objects) : [];
+    if (!entries.length || entries.length > 500
+      || !entries.every(([k, v]) => /^\d{1,3}$/.test(k) && typeof v === 'string' && /^[A-Z]$/.test(v))) {
+      return reply.code(400).send({ error: 'invalid choice' });
+    }
+    const db = openDatabase();
+    const row = db.prepare(`
+      SELECT slice_status AS status, slice_json AS sliceJson, file_path AS filePath, deleted_at AS deletedAt
+      FROM quote_files WHERE id = ? AND quote_id = ?
+    `).get(fileId, id);
+    if (!row) return reply.code(404).send({ error: 'not found' });
+    if (!row.filePath || row.deletedAt) return reply.code(410).send({ error: '원본 파일이 없습니다.' });
+    if (row.status === 'pending' || row.status === 'running') {
+      return reply.code(409).send({ error: '이미 슬라이싱 대기 중이거나 진행 중입니다.' });
+    }
+    const infos = parseSlice(row.sliceJson)?.objects || [];
+    for (const [k, v] of entries) {
+      const info = infos.find((o) => String(o.index) === k);
+      if (!info?.candidates?.some((c) => c.id === v && c.feasible && c.transform)) {
+        return reply.code(400).send({ error: `#${k} 후보 ${v}는 고를 수 없습니다.` });
+      }
+    }
+    enqueueSlices(db, [fileId], { choose: Object.fromEntries(entries) });
+    return { ok: true };
+  });
+
   app.put('/api/admin/quotes/:id/files/:fileId/decision', {
     preHandler: [requireAdmin, requireCsrfHeader],
   }, async (req, reply) => {

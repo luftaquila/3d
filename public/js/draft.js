@@ -1,6 +1,9 @@
 const DB_NAME = 'quote-draft';
 const STORE = 'files';
 const FIELDS_KEY = 'quote-draft-fields';
+// Never block the page on the draft: some browsers (e.g. Safari private
+// windows) can't keep files in IndexedDB and leave requests hanging.
+const LOAD_TIMEOUT_MS = 5000;
 
 function openIdb() {
   return new Promise((resolve, reject) => {
@@ -47,17 +50,21 @@ export async function saveFiles(files) {
 export async function loadFiles() {
   try {
     const db = await openIdb();
-    return await new Promise((resolve, reject) => {
+    const read = new Promise((resolve, reject) => {
       const tx = db.transaction(STORE, 'readonly');
       tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
       const out = [];
       const cursorReq = tx.objectStore(STORE).openCursor();
+      cursorReq.onerror = () => reject(cursorReq.error);
       cursorReq.onsuccess = (e) => {
         const cur = e.target.result;
         if (cur) { out.push(cur.value); cur.continue(); }
         else resolve(out);
       };
     });
+    const timeout = new Promise((resolve) => setTimeout(() => resolve([]), LOAD_TIMEOUT_MS));
+    return await Promise.race([read, timeout]);
   } catch {
     return [];
   }
@@ -67,10 +74,13 @@ export async function clearDraft() {
   try {
     sessionStorage.removeItem(FIELDS_KEY);
     const db = await openIdb();
-    await new Promise((resolve) => {
+    const clear = new Promise((resolve) => {
       const tx = db.transaction(STORE, 'readwrite');
       tx.oncomplete = resolve;
+      tx.onerror = resolve;
+      tx.onabort = resolve;
       tx.objectStore(STORE).clear();
     });
+    await Promise.race([clear, new Promise((resolve) => setTimeout(resolve, LOAD_TIMEOUT_MS))]);
   } catch {}
 }
