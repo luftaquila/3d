@@ -8,19 +8,32 @@
 
 export class ModelTooLargeError extends Error {}
 
+// The worker reports progress at least every second or so; a browser can kill
+// it (e.g. out of memory on a huge model) without any error event, so give up
+// when it has been silent this long. The quote form waits on this on submit.
+const WORKER_IDLE_TIMEOUT_MS = 60_000;
+
 function runWorker(message, onProgress) {
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL('./model-worker.js', import.meta.url), { type: 'module' });
+    let timer;
+    const finish = (fn, value) => {
+      clearTimeout(timer);
+      worker.terminate();
+      fn(value);
+    };
+    const arm = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => finish(reject, new Error('모델 분석이 응답하지 않습니다.')), WORKER_IDLE_TIMEOUT_MS);
+    };
     worker.onmessage = ({ data }) => {
-      if (data.progress != null) { onProgress?.(data.progress, data.phase); return; }
-      worker.terminate();
-      if (data.ok) resolve(data);
-      else reject(data.tooLarge ? new ModelTooLargeError(data.error) : new Error(data.error));
+      if (data.progress != null) { arm(); onProgress?.(data.progress, data.phase); return; }
+      if (data.ok) finish(resolve, data);
+      else finish(reject, data.tooLarge ? new ModelTooLargeError(data.error) : new Error(data.error));
     };
-    worker.onerror = (ev) => {
-      worker.terminate();
-      reject(new Error(ev.message || '모델을 해석하지 못했습니다.'));
-    };
+    worker.onerror = (ev) => finish(reject, new Error(ev.message || '모델을 해석하지 못했습니다.'));
+    worker.onmessageerror = () => finish(reject, new Error('모델 분석 결과를 받지 못했습니다.'));
+    arm();
     worker.postMessage(message);
   });
 }

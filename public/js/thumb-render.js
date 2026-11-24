@@ -3,13 +3,16 @@
 // THREE and a canvas factory (HTMLCanvasElement or OffscreenCanvas).
 // onStep(fraction) is told when the simplification is done (before the render).
 export function renderThumbnail(THREE, mesh, size, newCanvas, onStep) {
-  mesh = simplifyForThumbnail(mesh.positions) ?? mesh;
+  // Work on fresh arrays: rotateX below transforms them in place, and the
+  // caller may still need the original mesh (e.g. the main-thread fallback
+  // after a failed worker render, or its edge overlays).
+  mesh = simplifyForThumbnail(mesh.positions)
+    ?? { positions: mesh.positions.slice(), normals: mesh.normals.slice() };
   onStep?.(0.5);
   const scene = new THREE.Scene();
   scene.background = null;
 
   const geom = new THREE.BufferGeometry();
-  // the worker hands over its own arrays (no copy needed)
   geom.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3));
   geom.setAttribute('normal', new THREE.BufferAttribute(mesh.normals, 3));
   // Models are authored Z-up; rotate to the Y-up scene so thumbnails sit upright,

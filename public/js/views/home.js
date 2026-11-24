@@ -411,11 +411,14 @@ function wireQuoteForm(fields, state, navigate) {
     return `<span>${PHASES[e.phase] || '준비 중'} ${pct}%</span><span class="thumb-bar"><span style="width:${pct}%"></span></span>`;
   }
 
-  // Overall analysis progress of files still being processed (null if none).
+  // Overall analysis progress (null when every file is done).
+  // Over all files: finished ones count as done, not-started ones as 0, so the
+  // number only goes up while files are processed one after another.
   function pendingProgress() {
-    const pending = files.map((f) => entries.get(f.name)).filter((e) => e && !e.thumb && !e.error && !e.large);
-    if (!pending.length) return null;
-    return pending.reduce((a, e) => a + (e.progress || 0), 0) / pending.length;
+    const done = (e) => e && (e.thumb || e.error || e.large);
+    const all = files.map((f) => entries.get(f.name));
+    if (all.every(done)) return null;
+    return all.reduce((a, e) => a + (done(e) ? 1 : (e?.progress || 0)), 0) / all.length;
   }
   let onPendingProgress = null; // set while the submit button waits
 
@@ -692,6 +695,14 @@ function draftIsEmpty(vals, files) {
 async function restoreDraft(fields, control) {
   const vals = Draft.loadFields();
   const savedFiles = await Draft.loadFiles();
+  if (savedFiles === null) {
+    // The saved files could not be read in time: restore what we have, but
+    // don't auto-submit a quote that would silently lose its files.
+    if (draftIsEmpty(vals, [])) return false;
+    applyFieldValues(fields, vals);
+    toast('이전에 선택한 파일을 불러오지 못했습니다. 파일을 다시 선택해주세요.', 'error');
+    return false;
+  }
   if (draftIsEmpty(vals, savedFiles)) {
     if (vals) Draft.saveFields(null);
     return false;

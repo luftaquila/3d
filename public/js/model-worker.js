@@ -125,6 +125,14 @@ function progress(value, phase) {
   self.postMessage({ progress: v, phase });
 }
 
+// `<name` followed by whitespace, '/' or '>' (not a longer tag name such as
+// <triangles> or <components>). XML allows any whitespace after the name.
+function isTag(buf, lt, name) {
+  if (!buf.startsWith(name, lt + 1)) return false;
+  const c = buf.charCodeAt(lt + 1 + name.length);
+  return c === 32 || c === 9 || c === 10 || c === 13 || c === 47 || c === 62;
+}
+
 async function scanModel(stream, path, model) {
   const reader = stream.getReader();
   let buf = '';
@@ -141,23 +149,23 @@ async function scanModel(stream, path, model) {
       if (gt < 0) { i = lt; break; }
       const c = buf.charCodeAt(lt + 1);
       // fast paths for the millions of vertex / triangle tags
-      if (c === 118 /* v */ && buf.startsWith('vertex', lt + 1) && obj) {
+      if (c === 118 /* v */ && obj && isTag(buf, lt, 'vertex')) {
         const t = buf.slice(lt, gt);
         obj.v.push3(+attr(t, 'x'), +attr(t, 'y'), +attr(t, 'z'));
-      } else if (c === 116 /* t */ && buf.startsWith('triangle ', lt + 1) && obj) {
+      } else if (c === 116 /* t */ && obj && isTag(buf, lt, 'triangle')) {
         const t = buf.slice(lt, gt);
         obj.t.push3(+attr(t, 'v1'), +attr(t, 'v2'), +attr(t, 'v3'));
         if (++rawTriangles > MAX_TRIANGLES) throw new TooManyTriangles();
-      } else if (c === 111 /* o */ && buf.startsWith('object', lt + 1) && /\s/.test(buf[lt + 7])) {
+      } else if (c === 111 /* o */ && isTag(buf, lt, 'object')) {
         const t = buf.slice(lt, gt);
         obj = { v: new Grow(Float32Array), t: new Grow(Uint32Array), comps: [] };
         model.objects.set(attr(t, 'id'), obj);
-      } else if (c === 47 /* / */ && buf.startsWith('/object', lt + 1)) {
+      } else if (c === 47 /* / */ && isTag(buf, lt, '/object')) {
         obj = null;
-      } else if (c === 99 /* c */ && buf.startsWith('component ', lt + 1) && obj) {
+      } else if (c === 99 /* c */ && obj && isTag(buf, lt, 'component')) {
         const t = buf.slice(lt, gt);
         obj.comps.push({ id: attr(t, 'objectid'), path: normPath(pathAttr(t)) || path, m: parseTransform(attr(t, 'transform')) });
-      } else if (c === 105 /* i */ && buf.startsWith('item ', lt + 1)) {
+      } else if (c === 105 /* i */ && isTag(buf, lt, 'item')) {
         const t = buf.slice(lt, gt);
         model.items.push({ id: attr(t, 'objectid'), path: normPath(pathAttr(t)) || path, m: parseTransform(attr(t, 'transform')) });
       }
@@ -186,9 +194,16 @@ async function read3mfPositions(buffer, t = {}) {
   t.scanned = performance.now();
 
   const lookup = (path, id) => models.get(path)?.objects.get(id);
-  // no <build>: show every mesh object as is
-  const roots = items.length ? items : [...models].flatMap(([path, m]) =>
-    [...m.objects].filter(([, o]) => o.t.n).map(([id]) => ({ id, path, m: IDENTITY })));
+  // No <build>: show every top-level object as is. Objects used as another
+  // object's component are drawn through their parent, not again on their own.
+  let roots = items;
+  if (!roots.length) {
+    const used = new Set();
+    for (const [, m] of models) for (const [, o] of m.objects) for (const c of o.comps) used.add(`${c.path}#${c.id}`);
+    roots = [...models].flatMap(([path, m]) => [...m.objects]
+      .filter(([id, o]) => (o.t.n || o.comps.length) && !used.has(`${path}#${id}`))
+      .map(([id]) => ({ id, path, m: IDENTITY })));
+  }
 
   // count first, then bake into one preallocated soup
   const count = (o, depth) => {

@@ -11,7 +11,17 @@ function openIdb() {
     req.onupgradeneeded = () => req.result.createObjectStore(STORE);
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
+    req.onblocked = () => reject(new Error('draft database blocked'));
   });
+}
+
+const TIMED_OUT = Symbol('timed out');
+// Resolves to TIMED_OUT if fn() (opening the database included) hangs.
+function withTimeout(fn) {
+  return Promise.race([
+    fn(),
+    new Promise((resolve) => setTimeout(() => resolve(TIMED_OUT), LOAD_TIMEOUT_MS)),
+  ]);
 }
 
 export function saveFields(fields) {
@@ -47,24 +57,27 @@ export async function saveFiles(files) {
   }
 }
 
+// Saved files, [] when there are none, or null when they could not be read in
+// time (the caller should not assume the draft had no files).
 export async function loadFiles() {
   try {
-    const db = await openIdb();
-    const read = new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE, 'readonly');
-      tx.onerror = () => reject(tx.error);
-      tx.onabort = () => reject(tx.error);
-      const out = [];
-      const cursorReq = tx.objectStore(STORE).openCursor();
-      cursorReq.onerror = () => reject(cursorReq.error);
-      cursorReq.onsuccess = (e) => {
-        const cur = e.target.result;
-        if (cur) { out.push(cur.value); cur.continue(); }
-        else resolve(out);
-      };
+    const files = await withTimeout(async () => {
+      const db = await openIdb();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE, 'readonly');
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error);
+        const out = [];
+        const cursorReq = tx.objectStore(STORE).openCursor();
+        cursorReq.onerror = () => reject(cursorReq.error);
+        cursorReq.onsuccess = (e) => {
+          const cur = e.target.result;
+          if (cur) { out.push(cur.value); cur.continue(); }
+          else resolve(out);
+        };
+      });
     });
-    const timeout = new Promise((resolve) => setTimeout(() => resolve([]), LOAD_TIMEOUT_MS));
-    return await Promise.race([read, timeout]);
+    return files === TIMED_OUT ? null : files;
   } catch {
     return [];
   }
@@ -73,14 +86,15 @@ export async function loadFiles() {
 export async function clearDraft() {
   try {
     sessionStorage.removeItem(FIELDS_KEY);
-    const db = await openIdb();
-    const clear = new Promise((resolve) => {
-      const tx = db.transaction(STORE, 'readwrite');
-      tx.oncomplete = resolve;
-      tx.onerror = resolve;
-      tx.onabort = resolve;
-      tx.objectStore(STORE).clear();
+    await withTimeout(async () => {
+      const db = await openIdb();
+      return new Promise((resolve) => {
+        const tx = db.transaction(STORE, 'readwrite');
+        tx.oncomplete = resolve;
+        tx.onerror = resolve;
+        tx.onabort = resolve;
+        tx.objectStore(STORE).clear();
+      });
     });
-    await Promise.race([clear, new Promise((resolve) => setTimeout(resolve, LOAD_TIMEOUT_MS))]);
   } catch {}
 }

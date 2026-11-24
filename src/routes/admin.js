@@ -27,7 +27,8 @@ function sliceView(f) {
     requestedAt: f.sliceRequestedAt,
     slicedAt: f.slicedAt,
     error: f.sliceError,
-    manualLayout: !!f.sliceLayout,
+    // slice_layout also holds {choose} for a candidate re-slice, which isn't manual
+    manualLayout: !!f.sliceLayout && !parseSlice(f.sliceLayout)?.choose,
     result: parseSlice(f.sliceJson),
   } : null;
 }
@@ -566,6 +567,13 @@ export default async function adminRoutes(app) {
       return reply.code(409).send({ error: '이미 슬라이싱 대기 중이거나 진행 중입니다.' });
     }
     const infos = parseSlice(row.sliceJson)?.objects || [];
+    const chosenKeys = new Set(entries.map(([k]) => k));
+    const manual = infos.filter((o) => o.chosen_by === 'manual' && !chosenKeys.has(String(o.index)));
+    if (manual.length) {
+      return reply.code(409).send({
+        error: `${manual.map((o) => `#${o.index}`).join(', ')}은(는) 직접 배치한 객체라 후보로 바꾸면 배치가 사라집니다. 배치 편집에서 바꿔주세요.`,
+      });
+    }
     for (const [k, v] of entries) {
       const info = infos.find((o) => String(o.index) === k);
       if (!info?.candidates?.some((c) => c.id === v && c.feasible && c.transform)) {

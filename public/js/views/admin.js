@@ -1650,7 +1650,9 @@ function renderSliceDetail(f, base) {
   }).join('');
   const hasCands = (r.objects || []).some((o) => (o.candidates || []).some((c) => c.file));
   const llmInfo = r.llm?.used
-    ? `<div class="small">LLM: ${escapeHtml(r.llm.summary || '')}</div>`
+    ? (r.llm.overridden
+      ? `<div class="small muted">LLM이 고른 방향을 직접 바꿨습니다. (이전 LLM 판단: ${escapeHtml(r.llm.summary || '')})</div>`
+      : `<div class="small">LLM: ${escapeHtml(r.llm.summary || '')}</div>`)
     : (r.llm?.error ? `<div class="small muted">LLM 미사용 (${escapeHtml(r.llm.error)})</div>` : '');
   const orient = objects ? `
     <section class="sd-sec">

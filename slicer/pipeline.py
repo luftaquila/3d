@@ -267,7 +267,14 @@ def _manual_plan(layout, objects, result):
 def _choose_plan(choose, objects, result):
     """Re-slice with the explored candidates the admin picked in the web UI
     ({object index: candidate id}); other objects keep their current choice.
-    Placement is the same as for an automatic run."""
+    Placement is the same as for an automatic run, so a hand-made layout of
+    the other objects can't be kept: refuse instead of silently dropping it."""
+    kept_manual = [info["index"] for info in result["objects"]
+                   if info.get("chosen_by") == "manual" and str(info["index"]) not in choose]
+    if kept_manual:
+        raise bambu.SliceError(
+            "objects " + ", ".join(f"#{i}" for i in kept_manual)
+            + " were placed by hand; change them in the layout editor or pick a candidate for every object")
     plan = []
     for obj, info in zip(objects, result["objects"]):
         by_id = {c["id"]: c for c in info.get("candidates") or [] if c.get("feasible") and c.get("transform")}
@@ -279,6 +286,8 @@ def _choose_plan(choose, objects, result):
             info.update(chosen=cid, chosen_by="admin")
             for k in ("reason", "concerns", "supports"):  # the LLM's notes no longer apply
                 info.pop(k, None)
+            if result.get("llm", {}).get("used"):
+                result["llm"]["overridden"] = True
         mesh, m = geometry.place(obj["mesh"], np.array(by_id[cid]["transform"]))
         plan.append([obj, info, mesh, m])
     arrange = True
