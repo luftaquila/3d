@@ -130,15 +130,23 @@ function scrollToPanel(id) {
   }));
 }
 
+// Digits of a Korean mobile number. Contact autofill and copy-paste on phones
+// often give the international form (+82 10-1234-5678, or 82-010-...), which
+// is turned back into 010...; the country code is only stripped once the rest
+// looks like a mobile number, so typing 010... digit by digit is unaffected.
+function phoneDigits(raw) {
+  let d = String(raw || '').replace(/\D/g, '');
+  if (/^820?1\d{8,9}$/.test(d)) d = `0${d.replace(/^820?/, '')}`;
+  return d.slice(0, 11);
+}
 function formatPhone(raw) {
-  const d = String(raw || '').replace(/\D/g, '').slice(0, 11);
+  const d = phoneDigits(raw);
   if (d.length < 4) return d;
   if (d.length < 8) return `${d.slice(0, 3)}-${d.slice(3)}`;
   return `${d.slice(0, 3)}-${d.slice(3, 7)}-${d.slice(7)}`;
 }
 function validPhone(raw) {
-  const d = String(raw || '').replace(/\D/g, '');
-  return /^01[016789]\d{7,8}$/.test(d);
+  return /^01[016789]\d{7,8}$/.test(phoneDigits(raw));
 }
 
 // Long-lived name/phone autofill (localStorage, separate from the per-submission
@@ -340,7 +348,7 @@ function renderDynamicFields(fields) {
 function collectFieldValues(fields) {
   const values = {
     name: document.getElementById('f-name').value,
-    phone: document.getElementById('f-phone').value,
+    phone: formatPhone(document.getElementById('f-phone').value), // normalized (+82 -> 010)
     consent: document.getElementById('f-consent').checked,
     answers: {},
   };
@@ -360,6 +368,10 @@ function applyFieldValues(fields, values) {
   const phone = document.getElementById('f-phone');
   if (name && typeof values.name === 'string') name.value = values.name;
   if (phone && typeof values.phone === 'string') phone.value = formatPhone(values.phone);
+  // the logged-out submit saves the draft with consent given; without this the
+  // auto-submit after login always stopped at the consent check
+  const consent = document.getElementById('f-consent');
+  if (consent && typeof values.consent === 'boolean') consent.checked = values.consent;
   for (const f of fields) {
     const el = document.getElementById(`f-${f.id}`);
     if (!el) continue;
@@ -383,13 +395,16 @@ function wireQuoteForm(fields, state, navigate) {
   // override during the login→auto-submit flow).
   const contact = loadContact();
   if (typeof contact.name === 'string') nameInput.value = contact.name;
-  if (typeof contact.phone === 'string') phoneInput.value = contact.phone;
+  if (typeof contact.phone === 'string') phoneInput.value = formatPhone(contact.phone);
   const persistContact = () => saveContact(nameInput.value, phoneInput.value);
 
-  phoneInput.addEventListener('input', () => {
-    phoneInput.value = formatPhone(phoneInput.value);
-    persistContact();
-  });
+  // 'change' too: some browsers fill autofill values without an input event
+  for (const ev of ['input', 'change']) {
+    phoneInput.addEventListener(ev, () => {
+      phoneInput.value = formatPhone(phoneInput.value);
+      persistContact();
+    });
+  }
   nameInput.addEventListener('input', persistContact);
 
   const consentBox = document.getElementById('consent-box');
@@ -598,9 +613,13 @@ function wireQuoteForm(fields, state, navigate) {
 
     if (!vals.name) return toast('이름 또는 닉네임을 입력해주세요.', 'error');
     if (!vals.phone) return toast('연락처를 입력해주세요.', 'error');
-    if (!validPhone(vals.phone)) return toast('전화번호 형식이 올바르지 않습니다. (예: 010-1234-5678)', 'error');
+    if (!validPhone(vals.phone)) return toast('휴대폰 번호 형식이 올바르지 않습니다. 견적은 문자로 안내드리니 휴대폰 번호를 입력해주세요. (예: 010-1234-5678)', 'error');
     if (!vals.consent) return toast('개인정보 수집 동의가 필요합니다.', 'error');
     if (files.length === 0) return toast('STL 파일을 업로드해주세요.', 'error');
+    {
+      const { failed } = await readableFiles(files);
+      if (failed.length) return toast(`파일을 읽을 수 없습니다: ${failed.join(', ')}. 파일을 다시 선택해주세요.`, 'error');
+    }
     for (const f of fields) {
       const v = vals.answers[f.id];
       if (f.required && f.type !== 'checkbox' && f.type !== 'notice' && !v) {
@@ -678,6 +697,26 @@ function wireQuoteForm(fields, state, navigate) {
   return { setFiles };
 }
 
+// Read each file fully and re-wrap it in memory. A File restored from the
+// draft store (IndexedDB) can become unreadable on some mobile browsers; put
+// in a FormData as is, the browser then sent an empty request body and the
+// quote was rejected (the customer saw a phone-number error). Returns
+// { ok: File[], failed: string[] (names) }.
+async function readableFiles(list) {
+  const ok = [];
+  const failed = [];
+  for (const f of list) {
+    try {
+      const buf = await f.arrayBuffer();
+      if (buf.byteLength !== f.size || buf.byteLength === 0) throw new Error('short read');
+      ok.push(new File([buf], f.name, { type: f.type, lastModified: f.lastModified }));
+    } catch {
+      failed.push(f.name);
+    }
+  }
+  return { ok, failed };
+}
+
 function draftIsEmpty(vals, files) {
   if (files && files.length > 0) return false;
   if (!vals) return true;
@@ -709,14 +748,20 @@ async function restoreDraft(fields, control) {
   }
 
   applyFieldValues(fields, vals);
-  if (savedFiles.length > 0) {
+  const { ok: files, failed } = await readableFiles(savedFiles);
+  if (files.length > 0) {
     const filesInput = document.getElementById('f-files');
     try {
       const dt = new DataTransfer();
-      for (const f of savedFiles) dt.items.add(f);
+      for (const f of files) dt.items.add(f);
       filesInput.files = dt.files;
     } catch {}
-    control.setFiles(savedFiles);
+    control.setFiles(files);
+  }
+  if (failed.length) {
+    // don't auto-submit without them; the customer has to pick them again
+    toast(`이전에 선택한 파일을 다시 읽지 못했습니다: ${failed.join(', ')}. 파일을 다시 선택해주세요.`, 'error');
+    return false;
   }
   toast('이전 입력 내용이 복원되었습니다.', 'success');
   return true;
