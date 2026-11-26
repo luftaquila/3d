@@ -300,11 +300,37 @@ def _choose_plan(choose, objects, result):
     return [tuple(p) for p in plan], arrange, False
 
 
-def _final_slice(plan, arrange, orient, result, out_dir, work):
-    overrides = None
+def _infill(settings, profile):
+    """Sparse infill density (%) for profile: the admin's setting, or the preset's."""
+    if settings and settings.get("infill") is not None:
+        return int(settings["infill"])
+    return int(str(bambu.preset_value(profile, "sparse_infill_density") or "0").rstrip("%"))
+
+
+def _reuse_plan(objects, result, previous):
+    """Slice again exactly where the previous run put every object (to apply
+    new settings): its bed matrices, and the CLI's arrange if it used one."""
+    infos = previous.get("objects") or []
+    if len(infos) != len(objects) or not all(i.get("bed_matrix") for i in infos):
+        return None
+    plan = []
+    for obj, info in zip(objects, result["objects"]):
+        m = np.array(info["bed_matrix"], dtype=float).reshape(4, 4)
+        mesh = obj["mesh"].copy()
+        mesh.apply_transform(m)
+        plan.append((obj, info, mesh, m))
+    layout = previous.get("layout") or {}
+    return plan, bool(layout.get("arrange")), bool(layout.get("orient"))
+
+
+def _final_slice(plan, arrange, orient, result, out_dir, work, settings=None):
+    overrides = {}
     if any(info.get("supports") == "everywhere" for _, info, _, _ in plan):
-        overrides = {"support_on_build_plate_only": "0"}
+        overrides["support_on_build_plate_only"] = "0"
         result["warnings"].append("supports enabled everywhere (not only from the build plate)")
+    # Only the final slices use the admin's settings; candidate exploration
+    # compares orientations at the preset's.
+    result["settings"] = {"infill": {p: _infill(settings, p) for p in PROFILES}}
     final_dir = os.path.join(work, "final")
     os.makedirs(final_dir)
     stls = []
@@ -319,8 +345,12 @@ def _final_slice(plan, arrange, orient, result, out_dir, work):
     result["layout"] = {"arrange": bool(arrange), "orient": bool(orient)}
     for profile in PROFILES:
         name = f"{profile}.gcode.3mf"
+        profile_overrides = dict(overrides)
+        if settings and settings.get("infill") is not None:
+            profile_overrides["sparse_infill_density"] = f"{int(settings['infill'])}%"
         sliced = bambu.slice_models(stls, os.path.join(work, f"final-{profile}"), profile,
-                                    orient=orient, arrange=arrange, export_name=name, overrides=overrides)
+                                    orient=orient, arrange=arrange, export_name=name,
+                                    overrides=profile_overrides or None)
         shutil.move(os.path.join(work, f"final-{profile}", name), os.path.join(out_dir, name))
         sliced["file"] = name
         result["profiles"][profile] = sliced
@@ -331,8 +361,10 @@ def process(job):
     out_dir = job["out_dir"]
     layout = job.get("layout")
     choose = job.get("choose")
+    reuse = job.get("reuse")
+    settings = job.get("settings")
     previous = None
-    if layout or choose:
+    if layout or choose or reuse:
         # Re-slice with a manual layout or chosen candidates: keep the
         # exploration artifacts (previews, sliced candidates) and replace only
         # the sliced output.
@@ -364,13 +396,16 @@ def process(job):
                 info.setdefault("preview", _object_info(obj)["preview"])
         _write_previews(objects, out_dir)
 
+        reused = _reuse_plan(objects, result, previous) if reuse and previous else None
         if layout:
             plan, arrange, orient = _manual_plan(layout, objects, result)
         elif choose:
             plan, arrange, orient = _choose_plan(choose, objects, result)
+        elif reused:
+            plan, arrange, orient = reused
         else:
             plan, arrange, orient = _auto_plan(job, objects, result, out_dir, work)
-        _final_slice(plan, arrange, orient, result, out_dir, work)
+        _final_slice(plan, arrange, orient, result, out_dir, work, settings)
         result["status"] = "done"
     except bambu.SliceError as e:
         result.update(status="failed", error=str(e), return_code=e.return_code)
@@ -459,7 +494,7 @@ def process_plate(job):
                 mesh, m = geometry.place(obj["mesh"], obj["orient"])
                 plan.append((obj, info, mesh, m))
             arrange, orient = True, False
-        _final_slice(plan, arrange, orient, result, out_dir, work)
+        _final_slice(plan, arrange, orient, result, out_dir, work, job.get("settings"))
         result["status"] = "done"
     except bambu.SliceError as e:
         result.update(status="failed", error=str(e), return_code=e.return_code)

@@ -28,7 +28,8 @@ function sliceView(f) {
     slicedAt: f.slicedAt,
     error: f.sliceError,
     // slice_layout also holds {choose} for a candidate re-slice, which isn't manual
-    manualLayout: !!f.sliceLayout && !parseSlice(f.sliceLayout)?.choose,
+    manualLayout: !!f.sliceLayout && !parseSlice(f.sliceLayout)?.choose && !parseSlice(f.sliceLayout)?.reuse,
+    settings: parseSlice(f.sliceSettings) || null,
     result: parseSlice(f.sliceJson),
   } : null;
 }
@@ -43,6 +44,7 @@ function plateView(q) {
     manualLayout: !!q.plateLayout,
     result: parseSlice(q.plateJson),
     printSent: q.platePrintSentAt ? { at: q.platePrintSentAt, ...parseSlice(q.platePrintSentJson) } : null,
+    settings: parseSlice(q.plateSettings) || null,
   } : null;
 }
 
@@ -95,6 +97,7 @@ export default async function adminRoutes(app) {
              q.plate_status AS plateStatus, q.plate_requested_at AS plateRequestedAt, q.plated_at AS platedAt,
              q.plate_json AS plateJson, q.plate_error AS plateError, q.plate_layout AS plateLayout,
              q.plate_print_sent_at AS platePrintSentAt, q.plate_print_sent_json AS platePrintSentJson,
+             q.plate_settings AS plateSettings,
              NOT EXISTS (SELECT 1 FROM quotes q2 WHERE q2.user_id = q.user_id AND q2.created_at < q.created_at) AS isFirst,
              COALESCE(u.withdrawn_email, u.email) AS userEmail,
              u.name AS userName,
@@ -114,7 +117,7 @@ export default async function adminRoutes(app) {
              surface_area_mm2 AS surfaceAreaMm2,
              slice_status AS sliceStatus, slice_requested_at AS sliceRequestedAt,
              sliced_at AS slicedAt, slice_json AS sliceJson, slice_error AS sliceError,
-             slice_layout AS sliceLayout,
+             slice_layout AS sliceLayout, slice_settings AS sliceSettings,
              print_decision AS printDecision, print_note AS printNote, decided_at AS decidedAt,
              print_sent_at AS printSentAt, print_sent_json AS printSentJson
       FROM quote_files
@@ -511,7 +514,8 @@ export default async function adminRoutes(app) {
     const plates = quoteIds.length ? openDatabase().prepare(`
       SELECT id, plate_status AS plateStatus, plate_requested_at AS plateRequestedAt, plated_at AS platedAt,
              plate_json AS plateJson, plate_error AS plateError, plate_layout AS plateLayout,
-             plate_print_sent_at AS platePrintSentAt, plate_print_sent_json AS platePrintSentJson
+             plate_print_sent_at AS platePrintSentAt, plate_print_sent_json AS platePrintSentJson,
+             plate_settings AS plateSettings
       FROM quotes WHERE id IN (${quoteIds.map(() => '?').join(',')})
     `).all(...quoteIds).map((q) => ({ quoteId: q.id, plate: plateView(q) })) : [];
     if (!ids.length) return { files: [], plates };
@@ -519,7 +523,7 @@ export default async function adminRoutes(app) {
       SELECT id, quote_id AS quoteId,
              slice_status AS sliceStatus, slice_requested_at AS sliceRequestedAt,
              sliced_at AS slicedAt, slice_json AS sliceJson, slice_error AS sliceError,
-             slice_layout AS sliceLayout
+             slice_layout AS sliceLayout, slice_settings AS sliceSettings
       FROM quote_files
       WHERE id IN (${ids.map(() => '?').join(',')})
     `).all(...ids);
@@ -681,6 +685,60 @@ export default async function adminRoutes(app) {
       req.log.warn({ fileId, err: err?.message }, 'printer: send failed');
       return reply.code(502).send({ error: String(err?.message || err) });
     }
+  });
+
+  // Slicing settings ({infill: 0-100, or null for the preset's}); re-slices
+  // with the same placement so only the settings change.
+  function parseSettings(body) {
+    const v = body?.infill;
+    if (v === null || v === undefined || v === '') return { settings: null };
+    const n = Number(v);
+    if (!Number.isInteger(n) || n < 0 || n > 100) return { error: '채우기 밀도는 0~100 사이 정수로 입력해주세요.' };
+    return { settings: { infill: n } };
+  }
+
+  app.post('/api/admin/quotes/:id/files/:fileId/settings', {
+    preHandler: [requireAdmin, requireCsrfHeader],
+  }, async (req, reply) => {
+    const { id, fileId } = req.params;
+    if (!isUlid(id) || !isUlid(fileId)) return reply.code(400).send({ error: 'invalid id' });
+    if (!slicerConfigured()) return reply.code(503).send({ error: '슬라이서가 설정되지 않았습니다.' });
+    const { settings, error } = parseSettings(req.body);
+    if (error) return reply.code(400).send({ error });
+    const db = openDatabase();
+    const row = db.prepare(`
+      SELECT slice_status AS status, file_path AS filePath, deleted_at AS deletedAt
+      FROM quote_files WHERE id = ? AND quote_id = ?
+    `).get(fileId, id);
+    if (!row) return reply.code(404).send({ error: 'not found' });
+    if (!row.filePath || row.deletedAt) return reply.code(410).send({ error: '원본 파일이 없습니다.' });
+    if (row.status === 'pending' || row.status === 'running') {
+      return reply.code(409).send({ error: '이미 슬라이싱 대기 중이거나 진행 중입니다.' });
+    }
+    db.prepare('UPDATE quote_files SET slice_settings = ? WHERE id = ?')
+      .run(settings ? JSON.stringify(settings) : null, fileId);
+    // the worker falls back to a full run when there is no previous placement
+    enqueueSlices(db, [fileId], { reuse: true });
+    return { ok: true };
+  });
+
+  app.post('/api/admin/quotes/:id/plate/settings', {
+    preHandler: [requireAdmin, requireCsrfHeader],
+  }, async (req, reply) => {
+    const { id } = req.params;
+    if (!isUlid(id)) return reply.code(400).send({ error: 'invalid id' });
+    if (!slicerConfigured()) return reply.code(503).send({ error: '슬라이서가 설정되지 않았습니다.' });
+    const { settings, error } = parseSettings(req.body);
+    if (error) return reply.code(400).send({ error });
+    const db = openDatabase();
+    const row = db.prepare('SELECT plate_status AS status, plate_layout AS layout FROM quotes WHERE id = ? AND deleted_at IS NULL').get(id);
+    if (!row) return reply.code(404).send({ error: 'not found' });
+    if (row.status === 'pending' || row.status === 'running') {
+      return reply.code(409).send({ error: '이미 대기 중이거나 진행 중입니다.' });
+    }
+    db.prepare('UPDATE quotes SET plate_settings = ? WHERE id = ?').run(settings ? JSON.stringify(settings) : null, id);
+    enqueuePlate(db, id, row.layout ? JSON.parse(row.layout) : null); // keep a manual plate layout
+    return { ok: true };
   });
 
   // ── Shared plate: all model files of a quote arranged together ──────────

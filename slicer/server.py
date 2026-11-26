@@ -6,6 +6,9 @@ POST /slice  {quoteId, fileId, path, filename, answers:[{label,value}], useLlm,
   placement (object frame -> plate coordinates), keeping earlier artifacts.
   choose?: {"<object index>": "<candidate id>"} instead re-slices with those
   explored candidates.
+  reuse?: true re-slices with the previous run's placement (to apply new
+  settings). settings?: {infill: 0-100} sparse infill density for the final
+  0.20 / 0.08 slices (exploration uses the preset's).
   plate?: {files:[{fileId, path, filename}]} (no fileId) puts the objects of
   several files of the quote on shared plates, each in its file's chosen
   orientation; layout works the same. Output in <quote>/plate/.
@@ -63,6 +66,21 @@ def _parse_layout(layout):
     return out
 
 
+def _parse_settings(settings):
+    """None, or {infill: 0-100}; ValueError if malformed."""
+    if settings is None:
+        return None
+    if not isinstance(settings, dict):
+        raise ValueError
+    out = {}
+    if settings.get("infill") is not None:
+        v = settings["infill"]
+        if isinstance(v, bool) or not isinstance(v, int) or not 0 <= v <= 100:
+            raise ValueError
+        out["infill"] = v
+    return out or None
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code, payload):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -118,6 +136,10 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             return self._send(400, {"error": "invalid layout"})
 
+        try:
+            settings = _parse_settings(req.get("settings"))
+        except ValueError:
+            return self._send(400, {"error": "invalid settings"})
         choose = req.get("choose")
         if choose is not None:
             if (not isinstance(choose, dict) or not choose or len(choose) > 500
@@ -136,6 +158,8 @@ class Handler(BaseHTTPRequestHandler):
                 "use_llm": bool(req.get("useLlm", True)),
                 "layout": layout,
                 "choose": choose,
+                "reuse": bool(req.get("reuse")),
+                "settings": settings,
             })
         finally:
             _lock.release()
@@ -153,12 +177,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, {"error": "a plate needs 2-100 files"})
         try:
             layout = _parse_layout(req.get("layout"))
+            settings = _parse_settings(req.get("settings"))
         except ValueError:
-            return self._send(400, {"error": "invalid layout"})
+            return self._send(400, {"error": "invalid layout or settings"})
         if not _lock.acquire(blocking=False):
             return self._send(409, {"error": "busy"})
         try:
             result = pipeline.process_plate({
+                "settings": settings,
                 "out_dir": os.path.join(SLICES_DIR, quote_id, "plate"),
                 "slices_dir": os.path.join(SLICES_DIR, quote_id),
                 "files": files,

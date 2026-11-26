@@ -1538,6 +1538,22 @@ async function openSliceDetail(q, f) {
     else staged[b.dataset.obj] = b.dataset.cand;
     renderChoice();
   }));
+  const applyInfill = async (infill) => {
+    try {
+      await api(`${apiBase}/settings`, { method: 'POST', body: { infill } });
+      toast(infill == null ? '기본 채우기 밀도로 다시 슬라이싱합니다.' : `채우기 밀도 ${infill}%로 다시 슬라이싱합니다. 끝나면 자동으로 표시됩니다.`, 'success');
+      close();
+      queued();
+    } catch (err) { toast(err.message, 'error'); }
+  };
+  $('.sd-infill-apply')?.addEventListener('click', () => {
+    const raw = $('.sd-infill').value.trim();
+    if (raw === '') return applyInfill(null);
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < 0 || n > 100) return toast('채우기 밀도는 0~100 사이 정수로 입력해주세요.', 'error');
+    return applyInfill(n);
+  });
+  $('.sd-infill-reset')?.addEventListener('click', () => applyInfill(null));
   $('.sd-choose-cancel')?.addEventListener('click', () => {
     for (const k of Object.keys(staged)) delete staged[k];
     renderChoice();
@@ -1724,17 +1740,38 @@ function renderSliceDetail(f, base) {
       </div>
     </div>`;
   }).join('');
+  // effective infill of the last run (per profile), and the saved override
+  const used = r.settings?.infill || {};
+  const usedVals = [...new Set(Object.values(used))];
+  const saved = f.slice?.settings?.infill;
+  const infillText = usedVals.length
+    ? `${usedVals.join('% / ')}%${saved == null ? ' (기본값)' : ''}`
+    : '-';
   const kv = [
     ['상태', r.status === 'done' ? '완료' : '<span class="error">실패</span>'],
     ['방향 결정', isPlate ? '파일별로 정한 방향' : r.mode === 'auto' ? 'Bambu 자동 방향' : '후보 탐색'],
     ['소요', `${fmtNum(r.elapsed_s)}초`],
+    ['채우기 밀도', infillText],
     ['완료 시각', f.slice.slicedAt ? fmtDate(f.slice.slicedAt) : '-'],
   ];
   const meta = `<dl class="sd-kv small">${kv.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>`;
+  const settingsRow = slicerEnabled && f.hasModel ? `
+      <div class="sd-settings">
+        <label class="sd-row">채우기 밀도
+          <input type="number" class="sd-infill" min="0" max="100" step="1" inputmode="numeric"
+            value="${saved ?? (usedVals.length === 1 ? usedVals[0] : '')}" placeholder="기본값">%
+        </label>
+        <div class="sd-row">
+          <button class="btn ghost sd-infill-apply">이 값으로 다시 슬라이싱</button>
+          ${saved != null ? '<button class="btn ghost sd-infill-reset">기본값으로</button>' : ''}
+        </div>
+        <div class="muted small">방향과 배치는 그대로 두고 0.20mm, 0.08mm를 다시 슬라이싱합니다.</div>
+      </div>` : '';
   const result = `
     <section class="sd-sec">
       <h4>슬라이싱 결과</h4>
       ${meta}
+      ${settingsRow}
       ${r.error ? `<div class="error small">${escapeHtml(r.error)}</div>` : ''}
       ${(r.warnings || []).map((w) => `<div class="small muted">⚠ ${escapeHtml(w)}</div>`).join('')}
       ${profiles}

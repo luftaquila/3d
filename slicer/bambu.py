@@ -51,6 +51,12 @@ def export_stls(model_3mf, out_dir, timeout=300):
     return [os.path.join(out_dir, f) for f in stls]
 
 
+def preset_value(profile, key):
+    """A setting of the (flattened) process preset, e.g. sparse_infill_density."""
+    with open(PROCESS[profile], encoding="utf-8") as fh:
+        return json.load(fh).get(key)
+
+
 def process_with_overrides(profile, overrides):
     """Return a process preset path, writing a temp copy when overrides are given."""
     path = PROCESS[profile]

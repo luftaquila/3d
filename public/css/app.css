@@ -1115,3 +1115,6 @@ details.sub-collapse[open] > summary::before { content: '▾'; }
 .sd-choose-bar { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--accent); border-radius: 6px; }
 .plate-block { margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--border-light); display: flex; flex-direction: column; gap: 4px; }
 .plate-block .btn { padding: 1px 8px; font-size: 11px; }
+.sd-settings { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--border-light); border-radius: 6px; }
+.sd-settings .sd-infill { width: 72px; padding: 4px 8px; }
+.sd-settings .btn { padding: 3px 10px; font-size: 12px; }
