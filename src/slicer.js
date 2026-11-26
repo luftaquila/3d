@@ -123,11 +123,14 @@ const TRANSPORT_CODES = new Set([
   'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_CLOSED',
 ]);
 
-// slice_layout holds either a manual layout or {choose: {index: candidate}}.
+// slice_layout holds a manual layout, {choose: {index: candidate}}, or
+// {reuse: true} (same placement as last time, e.g. for new settings).
 function redo(json) {
   if (!json) return {};
   const saved = JSON.parse(json);
-  return saved.choose ? { choose: saved.choose } : { layout: saved };
+  if (saved.choose) return { choose: saved.choose };
+  if (saved.reuse) return { reuse: true };
+  return { layout: saved };
 }
 
 // Next queued job, oldest request first: a file of a quote, or a quote's
@@ -136,14 +139,15 @@ async function runNext() {
   const db = openDatabase();
   const file = db.prepare(`
     SELECT qf.id, qf.quote_id AS quoteId, qf.filename, qf.file_path AS filePath,
-           qf.slice_layout AS layoutJson, qf.slice_requested_at AS at, q.answers_json AS answersJson
+           qf.slice_layout AS layoutJson, qf.slice_settings AS settingsJson,
+           qf.slice_requested_at AS at, q.answers_json AS answersJson
     FROM quote_files qf JOIN quotes q ON q.id = qf.quote_id
     WHERE qf.slice_status = 'pending' AND qf.file_path IS NOT NULL AND qf.deleted_at IS NULL
     ORDER BY qf.slice_requested_at ASC
     LIMIT 1
   `).get();
   const plate = db.prepare(`
-    SELECT id AS quoteId, plate_layout AS layoutJson, plate_requested_at AS at
+    SELECT id AS quoteId, plate_layout AS layoutJson, plate_settings AS settingsJson, plate_requested_at AS at
     FROM quotes WHERE plate_status = 'pending' AND deleted_at IS NULL
     ORDER BY plate_requested_at ASC LIMIT 1
   `).get();
@@ -162,6 +166,7 @@ function fileJob(db, row) {
       filename: row.filename,
       answers: resolveAnswers(db, row.answersJson),
       ...redo(row.layoutJson),
+      ...(row.settingsJson ? { settings: JSON.parse(row.settingsJson) } : {}),
     },
     setStatus: (status, onlyIfRunning) => db.prepare(
       `UPDATE quote_files SET slice_status = ? WHERE id = ?${onlyIfRunning ? " AND slice_status = 'running'" : ''}`,
@@ -188,7 +193,12 @@ function plateJob(db, row) {
     key: `plate:${row.quoteId}`,
     log: { quoteId: row.quoteId, plate: true },
     tooFew: files.length < 2,
-    body: { quoteId: row.quoteId, plate: { files }, ...(row.layoutJson ? { layout: JSON.parse(row.layoutJson) } : {}) },
+    body: {
+      quoteId: row.quoteId,
+      plate: { files },
+      ...(row.layoutJson ? { layout: JSON.parse(row.layoutJson) } : {}),
+      ...(row.settingsJson ? { settings: JSON.parse(row.settingsJson) } : {}),
+    },
     setStatus: (status, onlyIfRunning) => db.prepare(
       `UPDATE quotes SET plate_status = ? WHERE id = ?${onlyIfRunning ? " AND plate_status = 'running'" : ''}`,
     ).run(status, row.quoteId),

@@ -186,6 +186,13 @@ function migrate(db) {
     db.exec('ALTER TABLE quote_files ADD COLUMN print_note TEXT');
     db.exec('ALTER TABLE quote_files ADD COLUMN decided_at INTEGER');
   }
+  // Admin's slicing settings for the file ({infill}), applied to every run.
+  if (!fileCols.find((c) => c.name === 'slice_settings')) {
+    db.exec('ALTER TABLE quote_files ADD COLUMN slice_settings TEXT');
+  }
+  if (!quoteCols.find((c) => c.name === 'plate_settings')) {
+    db.exec('ALTER TABLE quotes ADD COLUMN plate_settings TEXT');
+  }
   // Last time this file was sent to the printer (JSON: profile, plate, tray, name).
   if (!fileCols.find((c) => c.name === 'print_sent_at')) {
     db.exec('ALTER TABLE quote_files ADD COLUMN print_sent_at INTEGER');
