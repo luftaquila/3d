@@ -255,12 +255,18 @@ export default async function quoteRoutes(app) {
     const reject = async (error) => {
       req.log.warn({
         reason: error, contentLength: req.headers['content-length'], fileCount, totalBytes,
+        userAgent: req.headers['user-agent'],
         files: rejectedFiles.concat(acceptedFiles.map((f) => ({ name: f.filename, size: f.size }))),
       }, 'quote submission rejected');
       await cleanupUploads(acceptedFiles);
       return reply.code(400).send({ error });
     };
     if (aborted) return reject(aborted);
+    // Nothing at all arrived: some mobile browsers send an empty body when a
+    // selected file can no longer be read. Say so instead of blaming a field.
+    if (!phone && !name && fileCount === 0) {
+      return reject('전송된 내용이 비어 있습니다. 파일을 다시 선택한 뒤 제출해주세요.');
+    }
     if (!phone || !PHONE_RE.test(phone)) return reject('전화번호 형식이 올바르지 않습니다.');
     if (!name) return reject('이름 또는 닉네임을 입력해주세요.');
     if (!consented) return reject('개인정보 수집 동의가 필요합니다.');
